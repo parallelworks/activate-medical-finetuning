@@ -107,12 +107,6 @@ on:
             default: "/home/$USER/pw/singularity/medical-finetune.sif"
             optional: true
 
-          output_bucket:
-            label: Output Storage Bucket (Optional - leave empty to skip)
-            type: storage
-            default: ""
-            optional: true
-
       dataset_config:
         type: group
         label: Dataset Configuration
@@ -332,23 +326,40 @@ on:
               - value: safetensors
               - value: bin
 
-          push_to_hub:
-            label: Push to HuggingFace Hub
-            type: boolean
-            default: false
+          upload_destination:
+            label: Upload Weights To
+            type: dropdown
+            default: none
             optional: true
+            options:
+              - value: none
+                label: No Upload (keep on cluster)
+              - value: pw_bucket
+                label: PW Storage Bucket
+              - value: huggingface
+                label: HuggingFace Hub
+
+          bucket_name:
+            label: PW Bucket Name
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'pw_bucket' }}
+            tooltip: "Bucket name for upload (e.g., my-bucket). Will upload as pw://bucket-name/medical-finetune-JOBID.tgz"
 
           hub_model_id:
             label: Hub Model ID (username/model-name)
             type: string
             default: ""
             optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'huggingface' }}
 
           hf_token:
             label: HuggingFace Access Token
             type: password
             default: ${{ org.HF_TOKEN }}
             optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'huggingface' }}
 
 
 jobs:
@@ -716,34 +727,71 @@ jobs:
 
   upload-outputs:
     needs: [finetune]
-    if: ${{ inputs.infrastructure.output_bucket }}
+    if: ${{ inputs.output_publishing.upload_destination != 'none' }}
     steps:
-      - name: Upload weights to bucket
+      - name: Upload weights to PW bucket
+        if: ${{ inputs.output_publishing.upload_destination == 'pw_bucket' }}
         early-cancel: any-job-failed
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
-          BUCKET_PATH="${{ inputs.infrastructure.output_bucket }}"
-          RUN_DIR="medical-finetune-${PW_JOB_NUMBER}"
+          BUCKET_NAME="${{ inputs.output_publishing.bucket_name }}"
+          ARCHIVE_NAME="medical-finetune-${PW_JOB_NUMBER}.tgz"
 
-          echo "Uploading outputs to ${BUCKET_PATH}/${RUN_DIR}..."
-          pw storage cp -r "${OUTPUT_DIR}/adapters" "${BUCKET_PATH}/${RUN_DIR}/adapters"
-
-          if [ -d "${OUTPUT_DIR}/merged" ]; then
-            pw storage cp -r "${OUTPUT_DIR}/merged" "${BUCKET_PATH}/${RUN_DIR}/merged"
+          if [ -z "${BUCKET_NAME}" ]; then
+            echo "Error: Bucket name is required for PW bucket upload"
+            exit 1
           fi
 
-          if [ -f "${OUTPUT_DIR}/logs/finetune.log" ]; then
-            pw storage cp "${OUTPUT_DIR}/logs/finetune.log" "${BUCKET_PATH}/${RUN_DIR}/"
-          fi
+          echo "Creating archive of outputs..."
+          cd "${OUTPUT_DIR}"
+          tar -czvf "/tmp/${ARCHIVE_NAME}" .
 
-          echo "Upload complete"
-          echo "Files in bucket:"
-          pw storage ls "${BUCKET_PATH}/${RUN_DIR}/"
+          echo "Uploading to pw://${BUCKET_NAME}/${ARCHIVE_NAME}..."
+          pw bucket cp "/tmp/${ARCHIVE_NAME}" "pw://${BUCKET_NAME}/${ARCHIVE_NAME}"
+
+          echo "Upload complete!"
+          echo "Download with: pw bucket cp pw://${BUCKET_NAME}/${ARCHIVE_NAME} ."
+          
+          # Cleanup temp file
+          rm -f "/tmp/${ARCHIVE_NAME}"
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
+      - name: Upload weights to HuggingFace Hub
+        if: ${{ inputs.output_publishing.upload_destination == 'huggingface' }}
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          HUB_MODEL_ID="${{ inputs.output_publishing.hub_model_id }}"
+          
+          if [ -z "${HUB_MODEL_ID}" ]; then
+            echo "Error: Hub Model ID is required for HuggingFace upload"
+            exit 1
+          fi
+
+          echo "Uploading to HuggingFace Hub: ${HUB_MODEL_ID}..."
+          
+          # Upload merged weights if available, otherwise adapters
+          if [ -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Uploading merged weights..."
+            huggingface-cli upload "${HUB_MODEL_ID}" "${OUTPUT_DIR}/merged" --token "${HF_TOKEN}"
+          elif [ -d "${OUTPUT_DIR}/adapters" ]; then
+            echo "Uploading adapter weights..."
+            huggingface-cli upload "${HUB_MODEL_ID}" "${OUTPUT_DIR}/adapters" --token "${HF_TOKEN}"
+          else
+            echo "Error: No weights found to upload"
+            exit 1
+          fi
+
+          echo "Upload complete!"
+          echo "View at: https://huggingface.co/${HUB_MODEL_ID}"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+        env:
+          HF_TOKEN: ${{ inputs.output_publishing.hf_token }}
+
   cleanup:
-    needs: [upload-outputs]
+    needs: [finetune]
     if: ${{ always }}
     steps:
       - name: Display training summary
