@@ -51,6 +51,7 @@ DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset_short}"
 LOCAL_DATASET_PATH="${LOCAL_DATASET_PATH:-}"
 DATASET_FORMAT="${DATASET_FORMAT:-json}"
 DATASET_SPLIT="${DATASET_SPLIT:-train}"
+DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-${HF_DATASETS_CACHE:-${HOME}/pw/datasets}}"
 PROMPT_FIELD="${PROMPT_FIELD:-prompt}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORKFLOW_ROOT}/output}"
 SIF_PATH="${SIF_PATH:-${HOME}/pw/singularity/medical-finetune.sif}"
@@ -166,22 +167,26 @@ apply_preset() {
             DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset}"
             NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
             MAX_SAMPLES="${MAX_SAMPLES:-0}"
+            MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-2048}"
             ;;
         llama3-8b-medical-quick)
             DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset_short}"
             NUM_EPOCHS="${NUM_EPOCHS:-1.0}"
-            MAX_SAMPLES="${MAX_SAMPLES:-500}"
+            MAX_SAMPLES="${MAX_SAMPLES:-50}"
             MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-512}"
+            BF16="${BF16:-true}"
             ;;
         mistral-7b-medical)
             DATASET_NAME="${DATASET_NAME:-Shekswess/medical_mistral_instruct_dataset}"
             NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
             MAX_SAMPLES="${MAX_SAMPLES:-0}"
+            MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-2048}"
             ;;
         gemma-7b-medical)
             DATASET_NAME="${DATASET_NAME:-Shekswess/medical_gemma_instruct_dataset}"
             NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
             MAX_SAMPLES="${MAX_SAMPLES:-0}"
+            MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-2048}"
             ;;
         *)
             log_warning "Unknown preset: ${preset}"
@@ -386,6 +391,11 @@ EOF
             singularity_opts+=("--env" "TENSORBOARD_BIND_ALL=true")
         fi
     fi
+
+    # Bind dataset cache directory and pass HF_DATASETS_CACHE
+    mkdir -p "${DATASET_CACHE_DIR}"
+    singularity_opts+=("--bind" "${DATASET_CACHE_DIR}:/workspace/datasets")
+    singularity_opts+=("--env" "HF_DATASETS_CACHE=/workspace/datasets")
 
     # Pass training configuration as environment variables for run_finetune.sh
     singularity_opts+=("--env" "BASE_MODEL_ID=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}")

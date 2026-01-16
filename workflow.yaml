@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+
 # ==============================================================================
 # Medical LLM Fine-tuning Workflow
 # ==============================================================================
@@ -58,13 +60,13 @@ on:
           model_config:
             label: Configuration Preset
             type: dropdown
-            default: llama3-8b-medical
+            default: llama3-8b-medical-quick
             optional: true
             options:
-              - value: llama3-8b-medical
-                label: Llama 3 8B Medical (Production)
               - value: llama3-8b-medical-quick
                 label: Llama 3 8B Medical (Quick Test)
+              - value: llama3-8b-medical
+                label: Llama 3 8B Medical (Production)
               - value: mistral-7b-medical
                 label: Mistral 7B Medical
               - value: gemma-7b-medical
@@ -73,7 +75,7 @@ on:
           base_model_id:
             label: Base Model ID (HuggingFace)
             type: string
-            default: meta-llama/Llama-3.1-8B-Instruct
+            default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
             optional: true
 
       dataset_config:
@@ -93,10 +95,17 @@ on:
               - value: bucket
                 label: PW Storage Bucket
 
+          dataset_cache_dir:
+            label: Dataset Cache Directory
+            type: string
+            default: "/home/$USER/pw/datasets"
+            optional: true
+            description: Shared location for caching HuggingFace datasets across runs
+
           dataset_name:
             label: Dataset Name (HuggingFace)
             type: string
-            default: Shekswess/medical_llama3_instruct_dataset
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 'Shekswess/medical_llama3_instruct_dataset_short' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'Shekswess/medical_mistral_instruct_dataset' : (inputs.model_selection.model_config == 'gemma-7b-medical' ? 'Shekswess/medical_gemma_instruct_dataset' : 'Shekswess/medical_llama3_instruct_dataset')) }}"
             hidden: ${{ inputs.dataset_config.dataset_source != 'huggingface' }}
 
           dataset_bucket:
@@ -161,7 +170,7 @@ on:
           max_samples:
             label: Max Samples (0 = all)
             type: number
-            default: 0
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 50 : 0 }}"
             optional: true
 
       training_hyperparameters:
@@ -172,7 +181,7 @@ on:
           num_epochs:
             label: Training Epochs
             type: number
-            default: 3.0
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 1.0 : 3.0 }}"
             optional: true
 
           learning_rate:
@@ -184,19 +193,19 @@ on:
           micro_batch_size:
             label: Micro Batch Size (per GPU)
             type: number
-            default: 1
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 2 : 1 }}"
             optional: true
 
           gradient_accumulation:
             label: Gradient Accumulation Steps
             type: number
-            default: 16
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 8 : 16 }}"
             optional: true
 
           max_seq_length:
             label: Max Sequence Length (tokens)
             type: number
-            default: 2048
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 512 : 2048 }}"
             optional: true
 
       lora_config:
@@ -207,7 +216,7 @@ on:
           lora_r:
             label: LoRA Rank (r)
             type: number
-            default: 64
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 32 : 64 }}"
             optional: true
 
           lora_alpha:
@@ -241,7 +250,7 @@ on:
           bf16:
             label: Use BF16 Mixed Precision
             type: boolean
-            default: false
+            default: true
             optional: true
 
           packing:
@@ -253,12 +262,12 @@ on:
       tensorboard_config:
         type: group
         label: TensorBoard Monitoring
-        collapsed: true
+        collapsed: false
         items:
           tensorboard_enabled:
             label: Enable TensorBoard
             type: boolean
-            default: false
+            default: true
             optional: true
 
           tensorboard_port:
@@ -317,7 +326,7 @@ on:
           hf_token:
             label: HuggingFace Access Token
             type: password
-            default: ""
+            default: ${{ org.HF_TOKEN }}
             optional: true
 
 
@@ -350,9 +359,11 @@ jobs:
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
           DATASET_DIR="${OUTPUT_DIR}/dataset"
-          mkdir -p "${DATASET_DIR}"
+          DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
+          mkdir -p "${DATASET_DIR}" "${DATASET_CACHE_DIR}"
 
           DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
+          DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
           echo "Dataset source: ${DATASET_SOURCE}"
 
           if [ "${DATASET_SOURCE}" == "bucket" ]; then
@@ -387,10 +398,24 @@ jobs:
             ls -la "${DATASET_DIR}"
 
           else
-            echo "Using HuggingFace Hub dataset (will be downloaded during training)"
+            echo "Using HuggingFace Hub dataset: ${DATASET_NAME}"
+            echo "Cache directory: ${DATASET_CACHE_DIR}"
+            
+            # Check if dataset is already cached
+            # HuggingFace datasets library will use HF_DATASETS_CACHE
+            export HF_DATASETS_CACHE="${DATASET_CACHE_DIR}"
+            
+            # Create a marker file to track cached datasets
+            CACHE_MARKER="${DATASET_CACHE_DIR}/.cached_datasets"
+            if grep -q "^${DATASET_NAME}$" "${CACHE_MARKER}" 2>/dev/null; then
+              echo "Dataset '${DATASET_NAME}' found in cache!"
+            else
+              echo "Dataset will be downloaded on first use and cached for future runs"
+            fi
           fi
 
           echo "DATASET_DIR=${DATASET_DIR}" >> $GITHUB_ENV
+          echo "HF_DATASETS_CACHE=${DATASET_CACHE_DIR}" >> $GITHUB_ENV
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
@@ -459,6 +484,8 @@ jobs:
           export LOCAL_DATASET_PATH="${{ inputs.dataset_config.local_dataset_path }}"
           export DATASET_FORMAT="${{ inputs.dataset_config.dataset_format }}"
           export MAX_SAMPLES="${{ inputs.dataset_config.max_samples }}"
+          export DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
+          export HF_DATASETS_CACHE="${{ inputs.dataset_config.dataset_cache_dir }}"
           
           # Training hyperparameters
           export NUM_EPOCHS="${{ inputs.training_hyperparameters.num_epochs }}"
@@ -634,72 +661,6 @@ jobs:
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
-configurations:
-  llama3-8b-medical:
-    variables:
-      base_model_id: meta-llama/Llama-3.1-8B-Instruct
-      dataset_name: Shekswess/medical_llama3_instruct_dataset
-      num_epochs: 3.0
-      learning_rate: 0.0002
-      micro_batch_size: 1
-      gradient_accumulation: 16
-      max_seq_length: 2048
-      lora_r: 64
-      lora_alpha: 16
-      quantization: 4bit
-      merge_full_weights: true
-      merged_save_format: safetensors
-      bf16: false
-      gradient_checkpointing: true
-
-  llama3-8b-medical-quick:
-    variables:
-      base_model_id: meta-llama/Llama-3.1-8B-Instruct
-      dataset_name: Shekswess/medical_llama3_instruct_dataset_short
-      num_epochs: 1.0
-      learning_rate: 0.0002
-      micro_batch_size: 2
-      gradient_accumulation: 8
-      max_seq_length: 2048
-      lora_r: 32
-      lora_alpha: 16
-      quantization: 4bit
-      merge_full_weights: true
-      merged_save_format: safetensors
-      bf16: false
-      gradient_checkpointing: true
-      max_samples: 500
-
-  mistral-7b-medical:
-    variables:
-      base_model_id: mistralai/Mistral-7B-Instruct-v0.2
-      dataset_name: Shekswess/medical_mistral_instruct_dataset
-      num_epochs: 3.0
-      learning_rate: 0.0002
-      micro_batch_size: 1
-      gradient_accumulation: 16
-      max_seq_length: 2048
-      lora_r: 64
-      lora_alpha: 16
-      quantization: 4bit
-      merge_full_weights: true
-      merged_save_format: safetensors
-      bf16: false
-      gradient_checkpointing: true
-
-  gemma-7b-medical:
-    variables:
-      base_model_id: google/gemma-1.1-7b-it
-      dataset_name: Shekswess/medical_gemma_instruct_dataset
-      num_epochs: 3.0
-      learning_rate: 0.0002
-      micro_batch_size: 1
-      gradient_accumulation: 16
-      max_seq_length: 2048
-      lora_r: 64
-      lora_alpha: 16
-      quantization: 4bit
-      merge_full_weights: true
-      merged_save_format: safetensors
-      bf16: false
-      gradient_checkpointing: true
+# Note: Configuration presets are now implemented via dynamic defaults in the form inputs.
+# When user selects a preset from the dropdown, all related fields automatically update.
+# Users can still override any value after selecting a preset.
