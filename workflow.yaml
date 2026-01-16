@@ -53,11 +53,30 @@ on:
               - value: gemma-7b-medical
                 label: Gemma 7B Medical
 
+          model_source:
+            label: Model Source
+            type: dropdown
+            default: huggingface
+            options:
+              - value: huggingface
+                label: HuggingFace Hub
+              - value: local
+                label: Local Path (pre-downloaded weights)
+
           base_model_id:
             label: Base Model ID (HuggingFace)
             type: string
             default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
             optional: true
+            hidden: ${{ inputs.model_selection.model_source == 'local' }}
+
+          local_model_path:
+            label: Local Model Path
+            type: string
+            default: "/models/Llama-3.1-8B-Instruct"
+            optional: true
+            hidden: ${{ inputs.model_selection.model_source != 'local' }}
+            tooltip: Path to pre-downloaded model weights directory
 
       infrastructure:
         type: group
@@ -507,7 +526,16 @@ jobs:
           
           # Export all training configuration as environment variables
           export OUTPUT_DIR="${OUTPUT_DIR}"
-          export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+          
+          # Set MODEL_ID based on source (HuggingFace or local path)
+          if [ "${{ inputs.model_selection.model_source }}" == "local" ]; then
+            export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
+            echo "Using local model weights: ${MODEL_ID}"
+          else
+            export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+            echo "Using HuggingFace model: ${MODEL_ID}"
+          fi
+          
           export DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
           export DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
           export DATASET_SPLIT="${{ inputs.dataset_config.dataset_split }}"
