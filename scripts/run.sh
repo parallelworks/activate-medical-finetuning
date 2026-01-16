@@ -373,6 +373,7 @@ EOF
     fi
     
     singularity_opts+=("--bind" "${WORKFLOW_ROOT}:/workspace")
+    singularity_opts+=("--bind" "${OUTPUT_DIR}:/output")
     singularity_opts+=("--env" "HF_HOME=/workspace/.cache/huggingface")
 
     # Pass HF token to container if set
@@ -400,7 +401,7 @@ EOF
     # Pass training configuration as environment variables for run_finetune.sh
     singularity_opts+=("--env" "BASE_MODEL_ID=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}")
     singularity_opts+=("--env" "DATASET_SOURCE=${DATASET_SOURCE}")
-    singularity_opts+=("--env" "OUTPUT_DIR=/workspace/output")
+    singularity_opts+=("--env" "OUTPUT_DIR=/output")
     singularity_opts+=("--env" "DATASET_SPLIT=${DATASET_SPLIT:-train}")
     singularity_opts+=("--env" "PROMPT_FIELD=${PROMPT_FIELD:-prompt}")
     singularity_opts+=("--env" "NUM_EPOCHS=${NUM_EPOCHS:-3.0}")

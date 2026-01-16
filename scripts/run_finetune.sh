@@ -3,8 +3,6 @@
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 LOG_DIR="${REPO_ROOT}/logs"
-TB_LOG_DIR="${REPO_ROOT}/output/logs"
-mkdir -p "${LOG_DIR}" "${TB_LOG_DIR}"
 
 # TensorBoard configuration
 TENSORBOARD_ENABLED="${TENSORBOARD_ENABLED:-false}"
@@ -12,6 +10,11 @@ TENSORBOARD_PORT="${TENSORBOARD_PORT:-6006}"
 TENSORBOARD_PATH_PREFIX="${TENSORBOARD_PATH_PREFIX:-}"
 TENSORBOARD_BIND_ALL="${TENSORBOARD_BIND_ALL:-false}"
 TENSORBOARD_PID=""
+
+# OUTPUT_DIR is set by the calling script/environment
+# TensorBoard logs go to ${OUTPUT_DIR}/tensorboard (same as pw_finetune.py)
+TB_LOG_DIR="${OUTPUT_DIR:-/output}/tensorboard"
+mkdir -p "${LOG_DIR}" "${TB_LOG_DIR}"
 
 start_tensorboard() {
     echo "Starting TensorBoard on port ${TENSORBOARD_PORT}..."
