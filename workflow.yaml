@@ -404,6 +404,9 @@ jobs:
           # Create output directory
           mkdir -p "${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
           
+          # Output RUN_ID for downstream jobs
+          echo "RUN_ID=${PW_JOB_NUMBER}" >> $OUTPUTS
+          
           echo "======================================"
           echo "Job Configuration"
           echo "======================================"
@@ -420,7 +423,7 @@ jobs:
       - name: Prepare dataset based on source
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           DATASET_DIR="${OUTPUT_DIR}/dataset"
           DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
           mkdir -p "${DATASET_DIR}" "${DATASET_CACHE_DIR}"
@@ -520,12 +523,12 @@ jobs:
           SINGULARITY_DISABLE_CACHE: "false"
 
   finetune:
-    needs: [build-container, prepare-dataset]
+    needs: [build-container, prepare-dataset, prepare_job_directory]
     steps:
       - name: Execute fine-tuning
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           WORKDIR="${{ inputs.infrastructure.rundir }}"
           WORKDIR="${WORKDIR/#\~/$HOME}"  # Expand tilde
           
@@ -645,13 +648,13 @@ jobs:
       - name: Validate outputs
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           
           echo "======================================"
           echo "Output Validation Debug"
           echo "======================================"
           echo "OUTPUT_DIR: ${OUTPUT_DIR}"
-          echo "PW_JOB_NUMBER: ${PW_JOB_NUMBER}"
+          echo "RUN_ID: ${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           echo ""
           echo "Contents of OUTPUT_DIR:"
           ls -la "${OUTPUT_DIR}" 2>/dev/null || echo "OUTPUT_DIR does not exist"
@@ -728,16 +731,16 @@ jobs:
           remoteHost: ${{ inputs.cluster.ip }}
 
   upload-outputs:
-    needs: [finetune]
+    needs: [finetune, prepare_job_directory]
     if: ${{ inputs.output_publishing.upload_destination != 'none' }}
     steps:
       - name: Upload weights to PW bucket
         if: ${{ inputs.output_publishing.upload_destination == 'pw_bucket' }}
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           BUCKET_NAME="${{ inputs.output_publishing.bucket_name }}"
-          ARCHIVE_NAME="medical-finetune-${PW_JOB_NUMBER}.tgz"
+          ARCHIVE_NAME="medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}.tgz"
 
           if [ -z "${BUCKET_NAME}" ]; then
             echo "Error: Bucket name is required for PW bucket upload"
@@ -763,7 +766,7 @@ jobs:
         if: ${{ inputs.output_publishing.upload_destination == 'huggingface' }}
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           HUB_MODEL_ID="${{ inputs.output_publishing.hub_model_id }}"
           
           if [ -z "${HUB_MODEL_ID}" ]; then
@@ -793,17 +796,17 @@ jobs:
           HF_TOKEN: ${{ inputs.output_publishing.hf_token }}
 
   cleanup:
-    needs: [finetune]
+    needs: [finetune, prepare_job_directory]
     if: ${{ always }}
     steps:
       - name: Display training summary
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           echo "======================================"
           echo "Medical LLM Fine-tuning Summary"
           echo "======================================"
-          echo "Run ID: ${PW_JOB_NUMBER}"
+          echo "Run ID: ${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           echo "Model: ${{ inputs.model_selection.base_model_id }}"
           echo "Dataset: ${{ inputs.dataset_config.dataset_name }}"
           echo "Output Directory: ${OUTPUT_DIR}"
