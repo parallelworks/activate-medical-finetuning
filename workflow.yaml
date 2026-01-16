@@ -324,7 +324,9 @@ on:
             optional: true
             options:
               - value: safetensors
+                label: SafeTensors (.safetensors)
               - value: bin
+                label: PyTorch Binary (.bin)
 
           upload_destination:
             label: Upload Weights To
