@@ -20,7 +20,7 @@ permissions:
   - '*'
 
 sessions:
-  tensorboard:
+  session:
     useTLS: false
     redirect: true
     useCustomDomain: false
@@ -570,8 +570,11 @@ jobs:
           # TensorBoard configuration (auto-configured for PW session proxy)
           export TENSORBOARD_ENABLED="${{ inputs.tensorboard_config.tensorboard_enabled }}"
           export TENSORBOARD_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
-          export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.tensorboard }}"
+          export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.session }}"
           export TENSORBOARD_BIND_ALL="true"
+          
+          # Restrict to single GPU for QLoRA training (avoids DataParallel issues)
+          export CUDA_VISIBLE_DEVICES="0"
           
           # HuggingFace Hub configuration
           if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
@@ -657,7 +660,7 @@ jobs:
         uses: parallelworks/update-session
         with:
           remotePort: ${{ inputs.tensorboard_config.tensorboard_port }}
-          name: ${{ sessions.tensorboard }}
+          name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
           slug: ""
