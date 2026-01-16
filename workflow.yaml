@@ -24,8 +24,6 @@ sessions:
     useTLS: false
     redirect: true
     useCustomDomain: false
-    prompt-for-name:
-      default: tensorboard
 
 on:
   execute:
@@ -277,20 +275,6 @@ on:
             optional: true
             hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
 
-          tensorboard_path_prefix:
-            label: TensorBoard Path Prefix (for reverse proxy)
-            type: string
-            default: ""
-            optional: true
-            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
-
-          tensorboard_bind_all:
-            label: Bind TensorBoard to All Interfaces
-            type: boolean
-            default: true
-            optional: true
-            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
-
       output_publishing:
         type: group
         label: Output & Publishing
@@ -507,11 +491,11 @@ jobs:
           export MERGE_FULL_WEIGHTS="${{ inputs.output_publishing.merge_full_weights }}"
           export MERGED_SAVE_FORMAT="${{ inputs.output_publishing.merged_save_format }}"
           
-          # TensorBoard configuration
+          # TensorBoard configuration (auto-configured for PW session proxy)
           export TENSORBOARD_ENABLED="${{ inputs.tensorboard_config.tensorboard_enabled }}"
           export TENSORBOARD_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
-          export TENSORBOARD_PATH_PREFIX="${{ inputs.tensorboard_config.tensorboard_path_prefix }}"
-          export TENSORBOARD_BIND_ALL="${{ inputs.tensorboard_config.tensorboard_bind_all }}"
+          export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.tensorboard }}"
+          export TENSORBOARD_BIND_ALL="true"
           
           # HuggingFace Hub configuration
           if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
