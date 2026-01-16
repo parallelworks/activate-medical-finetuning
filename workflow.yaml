@@ -573,6 +573,17 @@ jobs:
           export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.session }}"
           export TENSORBOARD_BIND_ALL="true"
           
+          # Debug: Log TensorBoard configuration
+          echo "====================================="
+          echo "TensorBoard Debug Info"
+          echo "====================================="
+          echo "PW_USER: ${PW_USER}"
+          echo "sessions.session value: ${{ sessions.session }}"
+          echo "TENSORBOARD_PATH_PREFIX: ${TENSORBOARD_PATH_PREFIX}"
+          echo "TENSORBOARD_PORT: ${TENSORBOARD_PORT}"
+          echo "TENSORBOARD_ENABLED: ${TENSORBOARD_ENABLED}"
+          echo "====================================="
+          
           # Restrict to single GPU for QLoRA training (avoids DataParallel issues)
           export CUDA_VISIBLE_DEVICES="0"
           
@@ -679,6 +690,7 @@ jobs:
   upload-outputs:
     needs: [finetune]
     if: ${{ inputs.infrastructure.output_bucket }}
+    ignore: ${{ !inputs.infrastructure.output_bucket }}
     steps:
       - name: Upload weights to bucket
         early-cancel: any-job-failed
