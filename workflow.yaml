@@ -397,7 +397,7 @@ jobs:
       - name: Prepare dataset based on source
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ run.id }}"
           DATASET_DIR="${OUTPUT_DIR}/dataset"
           DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
           mkdir -p "${DATASET_DIR}" "${DATASET_CACHE_DIR}"
@@ -502,7 +502,7 @@ jobs:
       - name: Execute fine-tuning
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ run.id }}"
           WORKDIR="${{ inputs.infrastructure.rundir }}"
           WORKDIR="${WORKDIR/#\~/$HOME}"  # Expand tilde
           
@@ -622,13 +622,13 @@ jobs:
       - name: Validate outputs
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ run.id }}"
           
           echo "======================================"
           echo "Output Validation Debug"
           echo "======================================"
           echo "OUTPUT_DIR: ${OUTPUT_DIR}"
-          echo "PW_RUN_ID: ${PW_RUN_ID}"
+          echo "PW_RUN_ID: ${{ run.id }}"
           echo ""
           echo "Contents of OUTPUT_DIR:"
           ls -la "${OUTPUT_DIR}" 2>/dev/null || echo "OUTPUT_DIR does not exist"
@@ -711,9 +711,9 @@ jobs:
       - name: Upload weights to bucket
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ run.id }}"
           BUCKET_PATH="${{ inputs.infrastructure.output_bucket }}"
-          RUN_DIR="medical-finetune-${PW_RUN_ID}"
+          RUN_DIR="medical-finetune-${{ run.id }}"
 
           echo "Uploading outputs to ${BUCKET_PATH}/${RUN_DIR}..."
           pw storage cp -r "${OUTPUT_DIR}/adapters" "${BUCKET_PATH}/${RUN_DIR}/adapters"
@@ -739,11 +739,11 @@ jobs:
       - name: Display training summary
         early-cancel: any-job-failed
         run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ run.id }}"
           echo "======================================"
           echo "Medical LLM Fine-tuning Summary"
           echo "======================================"
-          echo "Run ID: ${PW_RUN_ID}"
+          echo "Run ID: ${{ run.id }}"
           echo "Model: ${{ inputs.model_selection.base_model_id }}"
           echo "Dataset: ${{ inputs.dataset_config.dataset_name }}"
           echo "Output Directory: ${OUTPUT_DIR}"
