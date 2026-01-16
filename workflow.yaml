@@ -1,0 +1,651 @@
+# ==============================================================================
+# Medical LLM Fine-tuning Workflow
+# ==============================================================================
+# Fine-tunes LLMs (Llama2/3, Mistral, Gemma) on medical datasets using QLoRA/LoRA
+# via Singularity containers. Generates vLLM-compatible merged weights.
+#
+# Organized Input Sections:
+#   1. Infrastructure & Compute    - GPU cluster, containers, storage
+#   2. Model Selection             - Base model and configuration presets
+#   3. Dataset Configuration       - Training data and sampling
+#   4. Training Hyperparameters    - Optimizer and batch settings
+#   5. LoRA / PEFT Configuration   - Adapter and quantization settings
+#   6. Output & Publishing         - Model merging and hub publishing
+# ==============================================================================
+
+on:
+  execute:
+    inputs:
+      cluster:
+        label: GPU Cluster
+        type: compute-clusters
+        optional: false
+
+      infrastructure:
+        type: group
+        label: Infrastructure & Compute
+        collapsed: false
+        items:
+          singularity_image:
+            label: Singularity Image Path (Optional)
+            type: string
+            default: "/home/$USER/pw/singularity/medical-finetune.sif"
+            optional: true
+
+          output_bucket:
+            label: Output Storage Bucket (Optional - leave empty to skip)
+            type: storage
+            default: ""
+            optional: true
+
+      model_selection:
+        type: group
+        label: Model Selection
+        collapsed: false
+        items:
+          model_config:
+            label: Configuration Preset
+            type: dropdown
+            default: llama3-8b-medical
+            optional: true
+            options:
+              - value: llama3-8b-medical
+                label: Llama 3 8B Medical (Production)
+              - value: llama3-8b-medical-quick
+                label: Llama 3 8B Medical (Quick Test)
+              - value: mistral-7b-medical
+                label: Mistral 7B Medical
+              - value: gemma-7b-medical
+                label: Gemma 7B Medical
+
+          base_model_id:
+            label: Base Model ID (HuggingFace)
+            type: string
+            default: meta-llama/Llama-3.1-8B-Instruct
+            optional: true
+
+      dataset_config:
+        type: group
+        label: Dataset Configuration
+        collapsed: true
+        items:
+          dataset_source:
+            label: Dataset Source
+            type: dropdown
+            default: huggingface
+            options:
+              - value: huggingface
+                label: HuggingFace Hub
+              - value: local
+                label: Local File Path
+              - value: bucket
+                label: PW Storage Bucket
+
+          dataset_name:
+            label: Dataset Name (HuggingFace)
+            type: string
+            default: Shekswess/medical_llama3_instruct_dataset
+            hidden: ${{ inputs.dataset_config.dataset_source != 'huggingface' }}
+
+          dataset_bucket:
+            label: Dataset Storage Bucket
+            type: storage
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'bucket' }}
+
+          dataset_bucket_path:
+            label: Dataset Bucket Path
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'bucket' }}
+
+          local_dataset_path:
+            label: Local Dataset Path
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'local' }}
+
+          dataset_split:
+            label: Dataset Split
+            type: string
+            default: train
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source == 'bucket' }}
+
+          dataset_config_name:
+            label: Dataset Config Name
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'huggingface' }}
+
+          dataset_format:
+            label: Dataset Format
+            type: dropdown
+            default: json
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'local' }}
+            options:
+              - value: json
+                label: JSON / JSONL
+              - value: csv
+                label: CSV
+              - value: parquet
+                label: Parquet
+              - value: arrow
+                label: Arrow
+              - value: dataset
+                label: HuggingFace Dataset Directory
+
+          prompt_field:
+            label: Prompt Field Name
+            type: string
+            default: prompt
+            optional: true
+
+          max_samples:
+            label: Max Samples (0 = all)
+            type: number
+            default: 0
+            optional: true
+
+      training_hyperparameters:
+        type: group
+        label: Training Hyperparameters
+        collapsed: true
+        items:
+          num_epochs:
+            label: Training Epochs
+            type: number
+            default: 3.0
+            optional: true
+
+          learning_rate:
+            label: Learning Rate
+            type: number
+            default: 0.0002
+            optional: true
+
+          micro_batch_size:
+            label: Micro Batch Size (per GPU)
+            type: number
+            default: 1
+            optional: true
+
+          gradient_accumulation:
+            label: Gradient Accumulation Steps
+            type: number
+            default: 16
+            optional: true
+
+          max_seq_length:
+            label: Max Sequence Length (tokens)
+            type: number
+            default: 2048
+            optional: true
+
+      lora_config:
+        type: group
+        label: LoRA / PEFT Configuration
+        collapsed: true
+        items:
+          lora_r:
+            label: LoRA Rank (r)
+            type: number
+            default: 64
+            optional: true
+
+          lora_alpha:
+            label: LoRA Alpha
+            type: number
+            default: 16
+            optional: true
+
+          lora_dropout:
+            label: LoRA Dropout Rate
+            type: number
+            default: 0.05
+            optional: true
+
+          quantization:
+            label: Quantization Mode
+            type: dropdown
+            default: 4bit
+            optional: true
+            options:
+              - value: 4bit
+              - value: 8bit
+              - value: none
+
+          gradient_checkpointing:
+            label: Enable Gradient Checkpointing
+            type: boolean
+            default: true
+            optional: true
+
+          bf16:
+            label: Use BF16 Mixed Precision
+            type: boolean
+            default: false
+            optional: true
+
+          packing:
+            label: Enable Dataset Packing
+            type: boolean
+            default: false
+            optional: true
+
+      output_publishing:
+        type: group
+        label: Output & Publishing
+        collapsed: true
+        items:
+          merge_full_weights:
+            label: Merge LoRA into Full Weights
+            type: boolean
+            default: true
+            optional: true
+
+          merged_save_format:
+            label: Merged Weights Format
+            type: dropdown
+            default: safetensors
+            optional: true
+            options:
+              - value: safetensors
+              - value: bin
+
+          push_to_hub:
+            label: Push to HuggingFace Hub
+            type: boolean
+            default: false
+            optional: true
+
+          hub_model_id:
+            label: Hub Model ID (username/model-name)
+            type: string
+            default: ""
+            optional: true
+
+          hf_token:
+            label: HuggingFace Access Token
+            type: password
+            default: ""
+            optional: true
+
+
+permissions: ["*"]
+
+jobs:
+  setup:
+    steps:
+      - name: Verify GPU availability
+        run: |
+          echo "Checking GPU availability on ${{ inputs.cluster.name }}..."
+          nvidia-smi || { echo "No GPU available"; exit 1; }
+          echo "GPU(s) found:"
+          nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Clone source repository
+        run: |
+          if [ ! -d "LLM-Medical-Finetuning" ]; then
+            git clone https://github.com/Shekswess/LLM-Medical-Finetuning.git
+          fi
+          cd LLM-Medical-Finetuning
+          git log -1 --oneline
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  prepare-dataset:
+    needs: [setup]
+    steps:
+      - name: Prepare dataset based on source
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          DATASET_DIR="${OUTPUT_DIR}/dataset"
+          mkdir -p "${DATASET_DIR}"
+
+          DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
+          echo "Dataset source: ${DATASET_SOURCE}"
+
+          if [ "${DATASET_SOURCE}" == "bucket" ]; then
+            echo "Downloading dataset from PW Storage Bucket..."
+            BUCKET="${{ inputs.dataset_config.dataset_bucket }}"
+            BUCKET_PATH="${{ inputs.dataset_config.dataset_bucket_path }}"
+
+            if [ -z "${BUCKET}" ] || [ -z "${BUCKET_PATH}" ]; then
+              echo "Error: bucket and bucket_path must be specified for bucket source"
+              exit 1
+            fi
+
+            pw storage cp -r "${BUCKET}/${BUCKET_PATH}" "${DATASET_DIR}/"
+            echo "Dataset downloaded to ${DATASET_DIR}"
+            ls -la "${DATASET_DIR}"
+
+          elif [ "${DATASET_SOURCE}" == "local" ]; then
+            echo "Using local dataset path..."
+            LOCAL_PATH="${{ inputs.dataset_config.local_dataset_path }}"
+
+            if [ ! -e "${LOCAL_PATH}" ]; then
+              echo "Error: Local dataset path not found: ${LOCAL_PATH}"
+              exit 1
+            fi
+
+            if [ -f "${LOCAL_PATH}" ]; then
+              cp "${LOCAL_PATH}" "${DATASET_DIR}/"
+            elif [ -d "${LOCAL_PATH}" ]; then
+              cp -r "${LOCAL_PATH}"/* "${DATASET_DIR}/"
+            fi
+            echo "Dataset copied to ${DATASET_DIR}"
+            ls -la "${DATASET_DIR}"
+
+          else
+            echo "Using HuggingFace Hub dataset (will be downloaded during training)"
+          fi
+
+          echo "DATASET_DIR=${DATASET_DIR}" >> $GITHUB_ENV
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  build-container:
+    needs: [prepare-dataset]
+    steps:
+      - name: Build Singularity container
+        run: |
+          CONTAINER_DIR="${HOME}/pw/singularity"
+          mkdir -p "${CONTAINER_DIR}"
+          cd "${CONTAINER_DIR}"
+
+          if [ -n "${{ inputs.infrastructure.singularity_image }}" ]; then
+            echo "Using provided Singularity image: ${{ inputs.infrastructure.singularity_image }}"
+            if [ ! -f "${{ inputs.infrastructure.singularity_image }}" ]; then
+              echo "Error: Image not found at ${{ inputs.infrastructure.singularity_image }}"
+              exit 1
+            fi
+            export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+          else
+            DEF_FILE="${HOME}/pw/activate-medical-finetune/singularity/finetune.def"
+            SIF_PATH="${CONTAINER_DIR}/medical-finetune.sif"
+
+            if [ ! -f "${SIF_PATH}" ]; then
+              echo "Building Singularity image from ${DEF_FILE}..."
+              sudo singularity build "${SIF_PATH}" "${DEF_FILE}" || \
+                singularity build "${SIF_PATH}" "${DEF_FILE}"
+            else
+              echo "Using existing Singularity image: ${SIF_PATH}"
+            fi
+          fi
+
+          echo "SIF_PATH=${SIF_PATH}" >> $GITHUB_ENV
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+        env:
+          SINGULARITY_DISABLE_CACHE: "false"
+
+  finetune:
+    needs: [build-container, prepare-dataset]
+    timeout: 24h
+    env:
+      BASE_MODEL_ID: ${{ inputs.model_selection.base_model_id }}
+    steps:
+      - name: Prepare training environment
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          WORKDIR="${HOME}/pw/activate-medical-finetune"
+          mkdir -p "${OUTPUT_DIR}"
+
+          cp -r "${WORKDIR}/scripts" "${OUTPUT_DIR}/"
+          cp "${WORKDIR}/requirements.txt" "${OUTPUT_DIR}/"
+
+          # Set dataset directory if using bucket source
+          if [ "${{ inputs.dataset_config.dataset_source }}" == "bucket" ]; then
+            echo "DATASET_DIR=${DATASET_DIR}" >> $GITHUB_ENV
+          fi
+
+          if [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
+            export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
+          elif [ -n "${{ inputs.infrastructure.singularity_image }}" ]; then
+            export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+          else
+            echo "Error: Singularity image not found"
+            exit 1
+          fi
+
+          echo "SIF_PATH=${SIF_PATH}" >> $GITHUB_ENV
+          echo "WORKDIR=${OUTPUT_DIR}" >> $GITHUB_ENV
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Set training parameters
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          WORKDIR="${OUTPUT_DIR}"
+
+          cat << 'EOF' > "${WORKDIR}/training.env"
+          BASE_MODEL_ID=${BASE_MODEL_ID}
+          DATASET_SOURCE=${{ inputs.dataset_config.dataset_source }}
+          DATASET_NAME=${{ inputs.dataset_config.dataset_name }}
+          DATASET_SPLIT=${{ inputs.dataset_config.dataset_split }}
+          DATASET_CONFIG_NAME=${{ inputs.dataset_config.dataset_config_name }}
+          PROMPT_FIELD=${{ inputs.dataset_config.prompt_field }}
+          LOCAL_DATASET_PATH=${{ inputs.dataset_config.local_dataset_path }}
+          DATASET_FORMAT=${{ inputs.dataset_config.dataset_format }}
+          OUTPUT_DIR=${OUTPUT_DIR}
+          NUM_EPOCHS=${{ inputs.training_hyperparameters.num_epochs }}
+          LEARNING_RATE=${{ inputs.training_hyperparameters.learning_rate }}
+          WEIGHT_DECAY=0.0
+          WARMUP_STEPS=50
+          MICRO_BATCH_SIZE=${{ inputs.training_hyperparameters.micro_batch_size }}
+          GRADIENT_ACCUMULATION=${{ inputs.training_hyperparameters.gradient_accumulation }}
+          MAX_SEQ_LENGTH=${{ inputs.training_hyperparameters.max_seq_length }}
+          LOGGING_STEPS=10
+          SAVE_STEPS=200
+          SAVE_TOTAL_LIMIT=3
+          LORA_R=${{ inputs.lora_config.lora_r }}
+          LORA_ALPHA=${{ inputs.lora_config.lora_alpha }}
+          LORA_DROPOUT=${{ inputs.lora_config.lora_dropout }}
+          LORA_TARGET_MODULES=q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj
+          QUANTIZATION=${{ inputs.lora_config.quantization }}
+          BF16=${{ inputs.lora_config.bf16 }}
+          GRADIENT_CHECKPOINTING=${{ inputs.lora_config.gradient_checkpointing }}
+          PACKING=${{ inputs.lora_config.packing }}
+          MERGE_FULL_WEIGHTS=${{ inputs.output_publishing.merge_full_weights }}
+          MERGED_SAVE_FORMAT=${{ inputs.output_publishing.merged_save_format }}
+          EOF
+
+          if [ "${{ inputs.dataset_config.max_samples }}" -gt 0 ]; then
+            echo "MAX_SAMPLES=${{ inputs.dataset_config.max_samples }}" >> "${WORKDIR}/training.env"
+          fi
+
+          if [ "${{ inputs.output_publishing.push_to_hub }}" == "true" ]; then
+            echo "PUSH_TO_HUB=true" >> "${WORKDIR}/training.env"
+            if [ -n "${{ inputs.output_publishing.hub_model_id }}" ]; then
+              echo "HUB_MODEL_ID=${{ inputs.output_publishing.hub_model_id }}" >> "${WORKDIR}/training.env"
+            fi
+          fi
+
+          if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
+            echo "HF_TOKEN=${{ inputs.output_publishing.hf_token }}" >> "${WORKDIR}/training.env"
+          fi
+
+          echo "Training configuration:"
+          cat "${WORKDIR}/training.env"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Execute fine-tuning
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          WORKDIR="${OUTPUT_DIR}"
+          export HF_HOME="${OUTPUT_DIR}/.cache/huggingface"
+          export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+          export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
+          export TRANSFORMERS_VERBOSITY=error
+          export TOKENIZERS_PARALLELISM=false
+
+          source "${WORKDIR}/training.env"
+
+          singularity exec \
+            --nv \
+            --bind "${OUTPUT_DIR}:/workspace" \
+            --env HF_HOME=/workspace/.cache/huggingface \
+            "${SIF_PATH}" \
+            bash /workspace/scripts/run_finetune.sh
+
+          echo "Training completed. Checking outputs..."
+          ls -la "${OUTPUT_DIR}/adapters" || echo "No adapters found"
+          if [ "${MERGE_FULL_WEIGHTS}" == "true" ]; then
+            ls -la "${OUTPUT_DIR}/merged" || echo "No merged weights found"
+          fi
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+        timeout: 24h
+
+      - name: Validate outputs
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          if [ ! -d "${OUTPUT_DIR}/adapters" ]; then
+            echo "Error: No adapter outputs found"
+            exit 1
+          fi
+
+          if [ "${{ inputs.output_publishing.merge_full_weights }}" == "true" ] && [ ! -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Error: Merge requested but no merged weights found"
+            exit 1
+          fi
+
+          echo "Training outputs validated successfully"
+          echo "Adapter files:"
+          ls -la "${OUTPUT_DIR}/adapters"
+
+          if [ -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Merged weight files:"
+            ls -la "${OUTPUT_DIR}/merged"
+          fi
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  upload-outputs:
+    needs: [finetune]
+    if: ${{ inputs.infrastructure.output_bucket }}
+    steps:
+      - name: Upload weights to bucket
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          BUCKET_PATH="${{ inputs.infrastructure.output_bucket }}"
+          RUN_DIR="medical-finetune-${PW_RUN_ID}"
+
+          echo "Uploading outputs to ${BUCKET_PATH}/${RUN_DIR}..."
+          pw storage cp -r "${OUTPUT_DIR}/adapters" "${BUCKET_PATH}/${RUN_DIR}/adapters"
+
+          if [ -d "${OUTPUT_DIR}/merged" ]; then
+            pw storage cp -r "${OUTPUT_DIR}/merged" "${BUCKET_PATH}/${RUN_DIR}/merged"
+          fi
+
+          if [ -f "${OUTPUT_DIR}/logs/finetune.log" ]; then
+            pw storage cp "${OUTPUT_DIR}/logs/finetune.log" "${BUCKET_PATH}/${RUN_DIR}/"
+          fi
+
+          echo "Upload complete"
+          echo "Files in bucket:"
+          pw storage ls "${BUCKET_PATH}/${RUN_DIR}/"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  cleanup:
+    needs: [upload-outputs]
+    if: ${{ always }}
+    steps:
+      - name: Display training summary
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          echo "======================================"
+          echo "Medical LLM Fine-tuning Summary"
+          echo "======================================"
+          echo "Run ID: ${PW_RUN_ID}"
+          echo "Model: ${{ inputs.model_selection.base_model_id }}"
+          echo "Dataset: ${{ inputs.dataset_config.dataset_name }}"
+          echo "Output Directory: ${OUTPUT_DIR}"
+          echo ""
+          if [ -f "${OUTPUT_DIR}/logs/finetune.log" ]; then
+            echo "Last 20 lines of training log:"
+            tail -20 "${OUTPUT_DIR}/logs/finetune.log"
+          fi
+          echo "======================================"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+configurations:
+  llama3-8b-medical:
+    variables:
+      base_model_id: meta-llama/Llama-3.1-8B-Instruct
+      dataset_name: Shekswess/medical_llama3_instruct_dataset
+      num_epochs: 3.0
+      learning_rate: 0.0002
+      micro_batch_size: 1
+      gradient_accumulation: 16
+      max_seq_length: 2048
+      lora_r: 64
+      lora_alpha: 16
+      quantization: 4bit
+      merge_full_weights: true
+      merged_save_format: safetensors
+      bf16: false
+      gradient_checkpointing: true
+
+  llama3-8b-medical-quick:
+    variables:
+      base_model_id: meta-llama/Llama-3.1-8B-Instruct
+      dataset_name: Shekswess/medical_llama3_instruct_dataset_short
+      num_epochs: 1.0
+      learning_rate: 0.0002
+      micro_batch_size: 2
+      gradient_accumulation: 8
+      max_seq_length: 2048
+      lora_r: 32
+      lora_alpha: 16
+      quantization: 4bit
+      merge_full_weights: true
+      merged_save_format: safetensors
+      bf16: false
+      gradient_checkpointing: true
+      max_samples: 500
+
+  mistral-7b-medical:
+    variables:
+      base_model_id: mistralai/Mistral-7B-Instruct-v0.2
+      dataset_name: Shekswess/medical_mistral_instruct_dataset
+      num_epochs: 3.0
+      learning_rate: 0.0002
+      micro_batch_size: 1
+      gradient_accumulation: 16
+      max_seq_length: 2048
+      lora_r: 64
+      lora_alpha: 16
+      quantization: 4bit
+      merge_full_weights: true
+      merged_save_format: safetensors
+      bf16: false
+      gradient_checkpointing: true
+
+  gemma-7b-medical:
+    variables:
+      base_model_id: google/gemma-1.1-7b-it
+      dataset_name: Shekswess/medical_gemma_instruct_dataset
+      num_epochs: 3.0
+      learning_rate: 0.0002
+      micro_batch_size: 1
+      gradient_accumulation: 16
+      max_seq_length: 2048
+      lora_r: 64
+      lora_alpha: 16
+      quantization: 4bit
+      merge_full_weights: true
+      merged_save_format: safetensors
+      bf16: false
+      gradient_checkpointing: true

@@ -1,0 +1,5 @@
+# Pip constraints file to prevent upgrading NVIDIA's custom PyTorch build
+# The NVIDIA PyTorch base image has torch/torchvision with matching CUDA kernels
+# We must preserve these packages and not let pip upgrade them
+torch==2.3.0a0+40ec155e58.nv24.3
+torchvision

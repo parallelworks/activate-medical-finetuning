@@ -1,0 +1,27 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.03-py3
+
+%labels
+    Author Matthew.Shaxted
+    Maintainer ParallelWorks
+    Description "NVIDIA PyTorch base with Hugging Face + PEFT stack for medical fine-tuning"
+
+%environment
+    export HF_HOME=/workspace/.cache/huggingface
+    export TRANSFORMERS_CACHE=/workspace/.cache/huggingface/transformers
+    export PYTHONUNBUFFERED=1
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+    python3 -m pip install --upgrade pip
+    # Use torch/torchvision from base NVIDIA image - they're built together with matching CUDA kernels
+    # Create constraints file to prevent pip from upgrading NVIDIA's custom PyTorch build
+    echo "torch==2.3.0a0+40ec155e58.nv24.3" > /tmp/constraints.txt
+    echo "torchvision" >> /tmp/constraints.txt
+    pip install --constraint /tmp/constraints.txt -r /opt/workdir/requirements.txt
+
+%runscript
+    exec "$@"
+
+%files
+    requirements.txt /opt/workdir/requirements.txt
