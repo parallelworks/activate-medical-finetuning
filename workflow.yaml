@@ -135,7 +135,7 @@ on:
             type: string
             default: "/home/$USER/pw/datasets"
             optional: true
-            description: Shared location for caching HuggingFace datasets across runs
+            tooltip: Shared location for caching HuggingFace datasets across runs
 
           dataset_name:
             label: Dataset Name (HuggingFace)
@@ -707,7 +707,6 @@ jobs:
   upload-outputs:
     needs: [finetune]
     if: ${{ inputs.infrastructure.output_bucket }}
-    ignore: ${{ !inputs.infrastructure.output_bucket }}
     steps:
       - name: Upload weights to bucket
         early-cancel: any-job-failed
