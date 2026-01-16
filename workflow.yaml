@@ -10,8 +10,20 @@
 #   3. Dataset Configuration       - Training data and sampling
 #   4. Training Hyperparameters    - Optimizer and batch settings
 #   5. LoRA / PEFT Configuration   - Adapter and quantization settings
-#   6. Output & Publishing         - Model merging and hub publishing
+#   6. TensorBoard Monitoring      - Training visualization
+#   7. Output & Publishing         - Model merging and hub publishing
 # ==============================================================================
+
+permissions:
+  - '*'
+
+sessions:
+  tensorboard:
+    useTLS: false
+    redirect: true
+    useCustomDomain: false
+    prompt-for-name:
+      default: tensorboard
 
 on:
   execute:
@@ -238,6 +250,38 @@ on:
             default: false
             optional: true
 
+      tensorboard_config:
+        type: group
+        label: TensorBoard Monitoring
+        collapsed: true
+        items:
+          tensorboard_enabled:
+            label: Enable TensorBoard
+            type: boolean
+            default: false
+            optional: true
+
+          tensorboard_port:
+            label: TensorBoard Port
+            type: number
+            default: 6006
+            optional: true
+            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
+
+          tensorboard_path_prefix:
+            label: TensorBoard Path Prefix (for reverse proxy)
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
+
+          tensorboard_bind_all:
+            label: Bind TensorBoard to All Interfaces
+            type: boolean
+            default: true
+            optional: true
+            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
+
       output_publishing:
         type: group
         label: Output & Publishing
@@ -276,8 +320,6 @@ on:
             default: ""
             optional: true
 
-
-permissions: ["*"]
 
 jobs:
   setup:
@@ -369,7 +411,7 @@ jobs:
             fi
             export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
           else
-            DEF_FILE="${HOME}/pw/activate-medical-finetune/singularity/finetune.def"
+            DEF_FILE="${HOME}/pw/activate-medical-finetuning/singularity/finetune.def"
             SIF_PATH="${CONTAINER_DIR}/medical-finetune.sif"
 
             if [ ! -f "${SIF_PATH}" ]; then
@@ -390,117 +432,89 @@ jobs:
   finetune:
     needs: [build-container, prepare-dataset]
     timeout: 24h
-    env:
-      BASE_MODEL_ID: ${{ inputs.model_selection.base_model_id }}
     steps:
-      - name: Prepare training environment
+      - name: Execute fine-tuning
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
-          WORKDIR="${HOME}/pw/activate-medical-finetune"
-          mkdir -p "${OUTPUT_DIR}"
-
-          cp -r "${WORKDIR}/scripts" "${OUTPUT_DIR}/"
-          cp "${WORKDIR}/requirements.txt" "${OUTPUT_DIR}/"
-
-          # Set dataset directory if using bucket source
-          if [ "${{ inputs.dataset_config.dataset_source }}" == "bucket" ]; then
-            echo "DATASET_DIR=${DATASET_DIR}" >> $GITHUB_ENV
-          fi
-
-          if [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
-            export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
-          elif [ -n "${{ inputs.infrastructure.singularity_image }}" ]; then
+          WORKDIR="${HOME}/pw/activate-medical-finetuning"
+          
+          # Determine SIF path
+          if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
             export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+          elif [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
+            export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
           else
             echo "Error: Singularity image not found"
             exit 1
           fi
-
-          echo "SIF_PATH=${SIF_PATH}" >> $GITHUB_ENV
-          echo "WORKDIR=${OUTPUT_DIR}" >> $GITHUB_ENV
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
-
-      - name: Set training parameters
-        run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
-          WORKDIR="${OUTPUT_DIR}"
-
-          cat << 'EOF' > "${WORKDIR}/training.env"
-          BASE_MODEL_ID=${BASE_MODEL_ID}
-          DATASET_SOURCE=${{ inputs.dataset_config.dataset_source }}
-          DATASET_NAME=${{ inputs.dataset_config.dataset_name }}
-          DATASET_SPLIT=${{ inputs.dataset_config.dataset_split }}
-          DATASET_CONFIG_NAME=${{ inputs.dataset_config.dataset_config_name }}
-          PROMPT_FIELD=${{ inputs.dataset_config.prompt_field }}
-          LOCAL_DATASET_PATH=${{ inputs.dataset_config.local_dataset_path }}
-          DATASET_FORMAT=${{ inputs.dataset_config.dataset_format }}
-          OUTPUT_DIR=${OUTPUT_DIR}
-          NUM_EPOCHS=${{ inputs.training_hyperparameters.num_epochs }}
-          LEARNING_RATE=${{ inputs.training_hyperparameters.learning_rate }}
-          WEIGHT_DECAY=0.0
-          WARMUP_STEPS=50
-          MICRO_BATCH_SIZE=${{ inputs.training_hyperparameters.micro_batch_size }}
-          GRADIENT_ACCUMULATION=${{ inputs.training_hyperparameters.gradient_accumulation }}
-          MAX_SEQ_LENGTH=${{ inputs.training_hyperparameters.max_seq_length }}
-          LOGGING_STEPS=10
-          SAVE_STEPS=200
-          SAVE_TOTAL_LIMIT=3
-          LORA_R=${{ inputs.lora_config.lora_r }}
-          LORA_ALPHA=${{ inputs.lora_config.lora_alpha }}
-          LORA_DROPOUT=${{ inputs.lora_config.lora_dropout }}
-          LORA_TARGET_MODULES=q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj
-          QUANTIZATION=${{ inputs.lora_config.quantization }}
-          BF16=${{ inputs.lora_config.bf16 }}
-          GRADIENT_CHECKPOINTING=${{ inputs.lora_config.gradient_checkpointing }}
-          PACKING=${{ inputs.lora_config.packing }}
-          MERGE_FULL_WEIGHTS=${{ inputs.output_publishing.merge_full_weights }}
-          MERGED_SAVE_FORMAT=${{ inputs.output_publishing.merged_save_format }}
-          EOF
-
-          if [ "${{ inputs.dataset_config.max_samples }}" -gt 0 ]; then
-            echo "MAX_SAMPLES=${{ inputs.dataset_config.max_samples }}" >> "${WORKDIR}/training.env"
-          fi
-
-          if [ "${{ inputs.output_publishing.push_to_hub }}" == "true" ]; then
-            echo "PUSH_TO_HUB=true" >> "${WORKDIR}/training.env"
-            if [ -n "${{ inputs.output_publishing.hub_model_id }}" ]; then
-              echo "HUB_MODEL_ID=${{ inputs.output_publishing.hub_model_id }}" >> "${WORKDIR}/training.env"
-            fi
-          fi
-
+          
+          # Export all training configuration as environment variables
+          export OUTPUT_DIR="${OUTPUT_DIR}"
+          export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+          export DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
+          export DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
+          export DATASET_SPLIT="${{ inputs.dataset_config.dataset_split }}"
+          export DATASET_CONFIG_NAME="${{ inputs.dataset_config.dataset_config_name }}"
+          export PROMPT_FIELD="${{ inputs.dataset_config.prompt_field }}"
+          export LOCAL_DATASET_PATH="${{ inputs.dataset_config.local_dataset_path }}"
+          export DATASET_FORMAT="${{ inputs.dataset_config.dataset_format }}"
+          export MAX_SAMPLES="${{ inputs.dataset_config.max_samples }}"
+          
+          # Training hyperparameters
+          export NUM_EPOCHS="${{ inputs.training_hyperparameters.num_epochs }}"
+          export LEARNING_RATE="${{ inputs.training_hyperparameters.learning_rate }}"
+          export MICRO_BATCH_SIZE="${{ inputs.training_hyperparameters.micro_batch_size }}"
+          export GRADIENT_ACCUMULATION="${{ inputs.training_hyperparameters.gradient_accumulation }}"
+          export MAX_SEQ_LENGTH="${{ inputs.training_hyperparameters.max_seq_length }}"
+          
+          # LoRA configuration
+          export LORA_R="${{ inputs.lora_config.lora_r }}"
+          export LORA_ALPHA="${{ inputs.lora_config.lora_alpha }}"
+          export LORA_DROPOUT="${{ inputs.lora_config.lora_dropout }}"
+          export QUANTIZATION="${{ inputs.lora_config.quantization }}"
+          export BF16="${{ inputs.lora_config.bf16 }}"
+          export GRADIENT_CHECKPOINTING="${{ inputs.lora_config.gradient_checkpointing }}"
+          export PACKING="${{ inputs.lora_config.packing }}"
+          
+          # Output configuration
+          export MERGE_FULL_WEIGHTS="${{ inputs.output_publishing.merge_full_weights }}"
+          export MERGED_SAVE_FORMAT="${{ inputs.output_publishing.merged_save_format }}"
+          
+          # TensorBoard configuration
+          export TENSORBOARD_ENABLED="${{ inputs.tensorboard_config.tensorboard_enabled }}"
+          export TENSORBOARD_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
+          export TENSORBOARD_PATH_PREFIX="${{ inputs.tensorboard_config.tensorboard_path_prefix }}"
+          export TENSORBOARD_BIND_ALL="${{ inputs.tensorboard_config.tensorboard_bind_all }}"
+          
+          # HuggingFace Hub configuration
           if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
-            echo "HF_TOKEN=${{ inputs.output_publishing.hf_token }}" >> "${WORKDIR}/training.env"
+            export HF_TOKEN="${{ inputs.output_publishing.hf_token }}"
           fi
-
-          echo "Training configuration:"
-          cat "${WORKDIR}/training.env"
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
-
-      - name: Execute fine-tuning
-        run: |
-          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
-          WORKDIR="${OUTPUT_DIR}"
-          export HF_HOME="${OUTPUT_DIR}/.cache/huggingface"
-          export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
-          export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
-          export TRANSFORMERS_VERBOSITY=error
-          export TOKENIZERS_PARALLELISM=false
-
-          source "${WORKDIR}/training.env"
-
-          singularity exec \
-            --nv \
-            --bind "${OUTPUT_DIR}:/workspace" \
-            --env HF_HOME=/workspace/.cache/huggingface \
-            "${SIF_PATH}" \
-            bash /workspace/scripts/run_finetune.sh
-
+          
+          # Handle bucket dataset source
+          if [ "${{ inputs.dataset_config.dataset_source }}" == "bucket" ]; then
+            export DATASET_DIR="${OUTPUT_DIR}/dataset"
+          fi
+          
+          echo "======================================"
+          echo "Training Configuration"
+          echo "======================================"
+          echo "Model: ${MODEL_ID}"
+          echo "Dataset Source: ${DATASET_SOURCE}"
+          echo "Dataset: ${DATASET_NAME:-${LOCAL_DATASET_PATH:-bucket}}"
+          echo "Epochs: ${NUM_EPOCHS}"
+          echo "Max Samples: ${MAX_SAMPLES}"
+          echo "TensorBoard: ${TENSORBOARD_ENABLED}"
+          echo "======================================"
+          
+          # Execute training using run.sh
+          cd "${WORKDIR}"
+          ./scripts/run.sh
+          
           echo "Training completed. Checking outputs..."
-          ls -la "${OUTPUT_DIR}/adapters" || echo "No adapters found"
+          ls -la "${OUTPUT_DIR}/adapters" 2>/dev/null || echo "No adapters found"
           if [ "${MERGE_FULL_WEIGHTS}" == "true" ]; then
-            ls -la "${OUTPUT_DIR}/merged" || echo "No merged weights found"
+            ls -la "${OUTPUT_DIR}/merged" 2>/dev/null || echo "No merged weights found"
           fi
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
@@ -527,6 +541,46 @@ jobs:
             echo "Merged weight files:"
             ls -la "${OUTPUT_DIR}/merged"
           fi
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  tensorboard-session:
+    needs: [build-container, prepare-dataset]
+    if: ${{ inputs.tensorboard_config.tensorboard_enabled }}
+    steps:
+      - name: Wait for TensorBoard to start
+        run: |
+          echo "Waiting for TensorBoard to be available on port ${{ inputs.tensorboard_config.tensorboard_port }}..."
+          # Wait up to 5 minutes for TensorBoard to start (finetune job starts it)
+          for i in {1..150}; do
+            if nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; then
+              echo "TensorBoard is running on port ${{ inputs.tensorboard_config.tensorboard_port }}!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Warning: TensorBoard did not start within timeout"
+          exit 1
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+          
+      - name: Update TensorBoard Session
+        uses: parallelworks/update-session
+        with:
+          remotePort: ${{ inputs.tensorboard_config.tensorboard_port }}
+          name: ${{ sessions.tensorboard }}
+          status: running
+          target: ${{ inputs.cluster.id }}
+          slug: ""
+          
+      - name: Keep session alive during training
+        run: |
+          echo "TensorBoard session is active. Waiting for training to complete..."
+          # Keep session job running - it will be terminated when workflow completes
+          while nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; do
+            sleep 30
+          done
+          echo "TensorBoard stopped - training likely completed"
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
