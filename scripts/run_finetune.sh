@@ -3,7 +3,59 @@
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 LOG_DIR="${REPO_ROOT}/logs"
-mkdir -p "${LOG_DIR}"
+TB_LOG_DIR="${REPO_ROOT}/output/logs"
+mkdir -p "${LOG_DIR}" "${TB_LOG_DIR}"
+
+# TensorBoard configuration
+TENSORBOARD_ENABLED="${TENSORBOARD_ENABLED:-false}"
+TENSORBOARD_PORT="${TENSORBOARD_PORT:-6006}"
+TENSORBOARD_PATH_PREFIX="${TENSORBOARD_PATH_PREFIX:-}"
+TENSORBOARD_BIND_ALL="${TENSORBOARD_BIND_ALL:-false}"
+TENSORBOARD_PID=""
+
+start_tensorboard() {
+    echo "Starting TensorBoard on port ${TENSORBOARD_PORT}..."
+    local tb_args=(
+        --logdir "${TB_LOG_DIR}"
+        --port "${TENSORBOARD_PORT}"
+    )
+    
+    if [[ "${TENSORBOARD_BIND_ALL}" == "true" ]]; then
+        tb_args+=(--bind_all)
+    fi
+    
+    if [[ -n "${TENSORBOARD_PATH_PREFIX}" ]]; then
+        tb_args+=(--path_prefix "${TENSORBOARD_PATH_PREFIX}")
+    fi
+    
+    tensorboard "${tb_args[@]}" &
+    TENSORBOARD_PID=$!
+    echo "TensorBoard started with PID ${TENSORBOARD_PID}"
+    
+    # Give TensorBoard time to start
+    sleep 2
+    
+    if [[ "${TENSORBOARD_BIND_ALL}" == "true" ]]; then
+        echo "TensorBoard available at: http://0.0.0.0:${TENSORBOARD_PORT}${TENSORBOARD_PATH_PREFIX:-/}"
+    else
+        echo "TensorBoard available at: http://localhost:${TENSORBOARD_PORT}${TENSORBOARD_PATH_PREFIX:-/}"
+    fi
+}
+
+stop_tensorboard() {
+    if [[ -n "${TENSORBOARD_PID}" ]]; then
+        echo "Stopping TensorBoard (PID ${TENSORBOARD_PID})..."
+        kill "${TENSORBOARD_PID}" 2>/dev/null || true
+        wait "${TENSORBOARD_PID}" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    echo "Cleaning up..."
+    stop_tensorboard
+}
+
+trap cleanup EXIT INT TERM
 
 : "${BASE_MODEL_ID:?BASE_MODEL_ID must be provided}"
 : "${DATASET_SOURCE:=huggingface}"
@@ -82,9 +134,19 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
     CMD+=(--hf-token "${HF_TOKEN}")
 fi
 
+# Add TensorBoard logging if enabled
+if [[ "${TENSORBOARD_ENABLED}" == "true" ]]; then
+    CMD+=(--tensorboard)
+fi
+
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 export TRANSFORMERS_VERBOSITY=error
 export TOKENIZERS_PARALLELISM=false
+
+# Start TensorBoard if enabled
+if [[ "${TENSORBOARD_ENABLED}" == "true" ]]; then
+    start_tensorboard
+fi
 
 LOG_FILE="${LOG_DIR}/finetune.log"
 "${CMD[@]}" 2>&1 | tee "${LOG_FILE}"

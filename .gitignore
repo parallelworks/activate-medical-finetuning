@@ -1,2 +1,4 @@
 output
 .cache
+logs
+__pycache__

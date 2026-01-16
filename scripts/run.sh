@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-# Local Workflow Runner for Medical LLM Fine-tuning
+# Medical LLM Fine-tuning Runner
 # ==============================================================================
-# Executes the full fine-tuning workflow locally without the PW platform.
-# This is useful for debugging and development.
+# Unified entry point for fine-tuning - works both locally and in PW workflows.
+# Accepts configuration via environment variables (for workflows) or CLI args.
 #
 # Usage:
-#   ./scripts/run_local.sh [--config PRESET] [OPTIONS]
+#   ./scripts/run.sh [--config PRESET] [OPTIONS]
 #
 # Options:
 #   --config PRESET      Configuration preset (llama3-8b-medical, etc.)
@@ -22,10 +22,10 @@
 #
 # Examples:
 #   # Quick test with 100 samples
-#   ./scripts/run_local.sh --config llama3-8b-medical-quick --max-samples 100
+#   ./scripts/run.sh --config llama3-8b-medical-quick --max-samples 100
 #
 #   # Full training with local dataset
-#   ./scripts/run_local.sh --dataset-source local --local-dataset ./data.jsonl
+#   ./scripts/run.sh --dataset-source local --local-dataset ./data.jsonl
 #
 #   # Use existing container
 #   ./scripts/run_local.sh --sif-path ~/pw/singularity/medical-finetune.sif
@@ -42,19 +42,43 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKFLOW_ROOT="$(dirname "${SCRIPT_DIR}")"
 
-# Default values
-CONFIG=""
-DATASET_SOURCE="huggingface"
-DATASET_NAME="Shekswess/medical_llama3_instruct_dataset_short"
-LOCAL_DATASET_PATH=""
-DATASET_FORMAT="json"
-OUTPUT_DIR="${WORKFLOW_ROOT}/output"
-SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
-DEF_FILE="${WORKFLOW_ROOT}/singularity/finetune.def"
-BUILD_CONTAINER=false
-MAX_SAMPLES=0
-NUM_EPOCHS=""
-MAX_SEQ_LENGTH=""
+# Default values (environment variables take precedence, then CLI args)
+CONFIG="${CONFIG:-}"
+# MODEL_ID can come from MODEL_ID or BASE_MODEL_ID env var
+: "${MODEL_ID:=${BASE_MODEL_ID:-}}"
+DATASET_SOURCE="${DATASET_SOURCE:-huggingface}"
+DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset_short}"
+LOCAL_DATASET_PATH="${LOCAL_DATASET_PATH:-}"
+DATASET_FORMAT="${DATASET_FORMAT:-json}"
+DATASET_SPLIT="${DATASET_SPLIT:-train}"
+PROMPT_FIELD="${PROMPT_FIELD:-prompt}"
+OUTPUT_DIR="${OUTPUT_DIR:-${WORKFLOW_ROOT}/output}"
+SIF_PATH="${SIF_PATH:-${HOME}/pw/singularity/medical-finetune.sif}"
+DEF_FILE="${DEF_FILE:-${WORKFLOW_ROOT}/singularity/finetune.def}"
+BUILD_CONTAINER="${BUILD_CONTAINER:-false}"
+MAX_SAMPLES="${MAX_SAMPLES:-0}"
+NUM_EPOCHS="${NUM_EPOCHS:-}"
+MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-}"
+LEARNING_RATE="${LEARNING_RATE:-}"
+MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-}"
+GRADIENT_ACCUMULATION="${GRADIENT_ACCUMULATION:-}"
+LORA_R="${LORA_R:-}"
+LORA_ALPHA="${LORA_ALPHA:-}"
+LORA_DROPOUT="${LORA_DROPOUT:-}"
+QUANTIZATION="${QUANTIZATION:-4bit}"
+BF16="${BF16:-false}"
+GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-false}"
+PACKING="${PACKING:-false}"
+MERGE_FULL_WEIGHTS="${MERGE_FULL_WEIGHTS:-true}"
+MERGED_SAVE_FORMAT="${MERGED_SAVE_FORMAT:-safetensors}"
+HF_TOKEN="${HF_TOKEN:-}"
+# TENSORBOARD can come from TENSORBOARD_ENABLED or TENSORBOARD env var
+TENSORBOARD="${TENSORBOARD_ENABLED:-${TENSORBOARD:-false}}"
+[[ "${TENSORBOARD}" == "true" ]] && TENSORBOARD=true
+TENSORBOARD_PORT="${TENSORBOARD_PORT:-6006}"
+TENSORBOARD_PATH_PREFIX="${TENSORBOARD_PATH_PREFIX:-}"
+TENSORBOARD_BIND_ALL="${TENSORBOARD_BIND_ALL:-false}"
+[[ "${TENSORBOARD_BIND_ALL}" == "true" ]] && TENSORBOARD_BIND_ALL=true
 
 # ==============================================================================
 # Functions
@@ -80,7 +104,7 @@ print_usage() {
     cat << EOF
 Usage: $0 [--config PRESET] [OPTIONS]
 
-Execute the full fine-tuning workflow locally without PW platform.
+Execute the medical LLM fine-tuning workflow.
 
 Options:
   --config PRESET      Configuration preset:
@@ -97,8 +121,13 @@ Options:
   --build-container    Force rebuild container
   --max-samples N      Limit samples for testing (default: 0 = all)
   --epochs N           Number of epochs (overrides preset)
+  --max-seq-length N   Maximum sequence length (default: 2048, quick preset: 512)
   --model-id MODEL     HuggingFace model ID
   --hf-token TOKEN     HuggingFace access token
+  --tensorboard        Enable TensorBoard for training visualization
+  --tensorboard-port   TensorBoard server port (default: 6006)
+  --tensorboard-prefix Path prefix for reverse proxy (e.g., /tensorboard)
+  --tensorboard-bind-all  Bind TensorBoard to 0.0.0.0 for remote access
   --help, -h           Show this help
 
 Examples:
@@ -114,6 +143,9 @@ Examples:
   # Use specific model with 1 epoch
   $0 --model-id "mistralai/Mistral-7B-v0.1" --epochs 1
 
+  # Training with TensorBoard visualization
+  $0 --config llama3-8b-medical-quick --tensorboard
+
 Configuration Presets:
   llama3-8b-medical       - Llama 3 8B, full dataset, 3 epochs
   llama3-8b-medical-quick - Llama 3 8B, 500 samples, 1 epoch
@@ -128,27 +160,28 @@ EOF
 
 apply_preset() {
     local preset="$1"
+    # Presets only apply if env vars aren't already set
     case "${preset}" in
         llama3-8b-medical)
-            DATASET_NAME="Shekswess/medical_llama3_instruct_dataset"
-            NUM_EPOCHS="3.0"
-            MAX_SAMPLES=0
+            DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset}"
+            NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
+            MAX_SAMPLES="${MAX_SAMPLES:-0}"
             ;;
         llama3-8b-medical-quick)
-            DATASET_NAME="Shekswess/medical_llama3_instruct_dataset_short"
-            NUM_EPOCHS="1.0"
-            MAX_SAMPLES=500
-            MAX_SEQ_LENGTH=512
+            DATASET_NAME="${DATASET_NAME:-Shekswess/medical_llama3_instruct_dataset_short}"
+            NUM_EPOCHS="${NUM_EPOCHS:-1.0}"
+            MAX_SAMPLES="${MAX_SAMPLES:-500}"
+            MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-512}"
             ;;
         mistral-7b-medical)
-            DATASET_NAME="Shekswess/medical_mistral_instruct_dataset"
-            NUM_EPOCHS="3.0"
-            MAX_SAMPLES=0
+            DATASET_NAME="${DATASET_NAME:-Shekswess/medical_mistral_instruct_dataset}"
+            NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
+            MAX_SAMPLES="${MAX_SAMPLES:-0}"
             ;;
         gemma-7b-medical)
-            DATASET_NAME="Shekswess/medical_gemma_instruct_dataset"
-            NUM_EPOCHS="3.0"
-            MAX_SAMPLES=0
+            DATASET_NAME="${DATASET_NAME:-Shekswess/medical_gemma_instruct_dataset}"
+            NUM_EPOCHS="${NUM_EPOCHS:-3.0}"
+            MAX_SAMPLES="${MAX_SAMPLES:-0}"
             ;;
         *)
             log_warning "Unknown preset: ${preset}"
@@ -235,6 +268,31 @@ ensure_container() {
 }
 
 # ==============================================================================
+# TensorBoard (runs inside container with training)
+# ==============================================================================
+
+show_tensorboard_info() {
+    if [[ "${TENSORBOARD}" != true ]]; then
+        return 0
+    fi
+
+    local tb_url
+    if [[ "${TENSORBOARD_BIND_ALL}" == true ]]; then
+        tb_url="http://0.0.0.0:${TENSORBOARD_PORT}"
+    else
+        tb_url="http://localhost:${TENSORBOARD_PORT}"
+    fi
+
+    if [[ -n "${TENSORBOARD_PATH_PREFIX}" ]]; then
+        tb_url="${tb_url}${TENSORBOARD_PATH_PREFIX}"
+    fi
+
+    log_info "TensorBoard will start inside the container"
+    log_info "  URL: ${tb_url}"
+    log_info "  Log directory: ${OUTPUT_DIR}/logs"
+}
+
+# ==============================================================================
 # Training Execution
 # ==============================================================================
 
@@ -257,6 +315,11 @@ run_training() {
     # Add max sequence length if specified
     if [[ -n "${MAX_SEQ_LENGTH:-}" ]]; then
         cmd_args+=("--max-seq-length" "${MAX_SEQ_LENGTH}")
+    fi
+
+    # Add TensorBoard flag if enabled
+    if [[ "${TENSORBOARD}" == true ]]; then
+        cmd_args+=("--tensorboard")
     fi
 
     # Dataset arguments
@@ -298,7 +361,12 @@ EOF
 
     local singularity_opts=()
     singularity_opts+=("--nv")
-    singularity_opts+=("--fakeroot")
+    
+    # Use fakeroot if available (not all systems support it)
+    if ${SINGULARITY_CMD} exec --help 2>&1 | grep -q fakeroot; then
+        singularity_opts+=("--fakeroot")
+    fi
+    
     singularity_opts+=("--bind" "${WORKFLOW_ROOT}:/workspace")
     singularity_opts+=("--env" "HF_HOME=/workspace/.cache/huggingface")
 
@@ -307,9 +375,54 @@ EOF
         singularity_opts+=("--env" "HF_TOKEN=${HF_TOKEN}")
     fi
 
+    # Pass TensorBoard configuration to container
+    if [[ "${TENSORBOARD}" == true ]]; then
+        singularity_opts+=("--env" "TENSORBOARD_ENABLED=true")
+        singularity_opts+=("--env" "TENSORBOARD_PORT=${TENSORBOARD_PORT}")
+        if [[ -n "${TENSORBOARD_PATH_PREFIX}" ]]; then
+            singularity_opts+=("--env" "TENSORBOARD_PATH_PREFIX=${TENSORBOARD_PATH_PREFIX}")
+        fi
+        if [[ "${TENSORBOARD_BIND_ALL}" == true ]]; then
+            singularity_opts+=("--env" "TENSORBOARD_BIND_ALL=true")
+        fi
+    fi
+
+    # Pass training configuration as environment variables for run_finetune.sh
+    singularity_opts+=("--env" "BASE_MODEL_ID=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}")
+    singularity_opts+=("--env" "DATASET_SOURCE=${DATASET_SOURCE}")
+    singularity_opts+=("--env" "OUTPUT_DIR=/workspace/output")
+    singularity_opts+=("--env" "DATASET_SPLIT=${DATASET_SPLIT:-train}")
+    singularity_opts+=("--env" "PROMPT_FIELD=${PROMPT_FIELD:-prompt}")
+    singularity_opts+=("--env" "NUM_EPOCHS=${NUM_EPOCHS:-3.0}")
+    singularity_opts+=("--env" "MAX_SAMPLES=${MAX_SAMPLES}")
+    singularity_opts+=("--env" "QUANTIZATION=${QUANTIZATION:-4bit}")
+    singularity_opts+=("--env" "MERGE_FULL_WEIGHTS=${MERGE_FULL_WEIGHTS:-true}")
+    singularity_opts+=("--env" "MERGED_SAVE_FORMAT=${MERGED_SAVE_FORMAT:-safetensors}")
+    singularity_opts+=("--env" "BF16=${BF16:-true}")
+    singularity_opts+=("--env" "GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-false}")
+    singularity_opts+=("--env" "PACKING=${PACKING:-false}")
+
+    # Pass optional hyperparameters if set
+    [[ -n "${MAX_SEQ_LENGTH:-}" ]] && singularity_opts+=("--env" "MAX_SEQ_LENGTH=${MAX_SEQ_LENGTH}")
+    [[ -n "${LEARNING_RATE:-}" ]] && singularity_opts+=("--env" "LEARNING_RATE=${LEARNING_RATE}")
+    [[ -n "${MICRO_BATCH_SIZE:-}" ]] && singularity_opts+=("--env" "MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}")
+    [[ -n "${GRADIENT_ACCUMULATION:-}" ]] && singularity_opts+=("--env" "GRADIENT_ACCUMULATION=${GRADIENT_ACCUMULATION}")
+    [[ -n "${LORA_R:-}" ]] && singularity_opts+=("--env" "LORA_R=${LORA_R}")
+    [[ -n "${LORA_ALPHA:-}" ]] && singularity_opts+=("--env" "LORA_ALPHA=${LORA_ALPHA}")
+    [[ -n "${LORA_DROPOUT:-}" ]] && singularity_opts+=("--env" "LORA_DROPOUT=${LORA_DROPOUT}")
+
+    if [[ "${DATASET_SOURCE}" == "huggingface" ]]; then
+        singularity_opts+=("--env" "DATASET_NAME=${DATASET_NAME}")
+    elif [[ "${DATASET_SOURCE}" == "local" ]]; then
+        singularity_opts+=("--env" "LOCAL_DATASET_PATH=/workspace/${LOCAL_DATASET_PATH#${WORKFLOW_ROOT}/}")
+        singularity_opts+=("--env" "DATASET_FORMAT=${DATASET_FORMAT}")
+    elif [[ "${DATASET_SOURCE}" == "bucket" ]]; then
+        singularity_opts+=("--env" "DATASET_DIR=/workspace/dataset")
+    fi
+
     ${SINGULARITY_CMD} exec "${singularity_opts[@]}" \
         "${SIF_PATH}" \
-        python /workspace/scripts/pw_finetune.py "${cmd_args[@]}" \
+        bash /workspace/scripts/run_finetune.sh \
         2>&1 | tee "${OUTPUT_DIR}/logs/finetune.log"
 
     local exit_code=${PIPESTATUS[0]}
@@ -346,7 +459,7 @@ show_results() {
 # Parse Arguments
 # ==============================================================================
 
-MODEL_ID=""
+# Note: MODEL_ID is already set from env vars above, don't reset it
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -404,6 +517,22 @@ while [[ $# -gt 0 ]]; do
             MAX_SEQ_LENGTH="$2"
             shift 2
             ;;
+        --tensorboard)
+            TENSORBOARD=true
+            shift
+            ;;
+        --tensorboard-port)
+            TENSORBOARD_PORT="$2"
+            shift 2
+            ;;
+        --tensorboard-prefix)
+            TENSORBOARD_PATH_PREFIX="$2"
+            shift 2
+            ;;
+        --tensorboard-bind-all)
+            TENSORBOARD_BIND_ALL=true
+            shift
+            ;;
         --help|-h)
             print_usage
             exit 0
@@ -416,10 +545,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Apply default preset if none specified
-if [[ -z "${CONFIG}" ]]; then
+# Apply default preset if none specified and no env vars set
+if [[ -z "${CONFIG}" ]] && [[ -z "${MODEL_ID:-}" ]] && [[ -z "${BASE_MODEL_ID:-}" ]]; then
     apply_preset "llama3-8b-medical-quick"
     log_info "Using default preset: llama3-8b-medical-quick"
+elif [[ -n "${CONFIG}" ]]; then
+    log_info "Using preset: ${CONFIG}"
+else
+    log_info "Using environment variable configuration"
 fi
 
 # ==============================================================================
@@ -439,6 +572,10 @@ main() {
     echo ""
 
     ensure_container
+    echo ""
+
+    # Show TensorBoard info if enabled (it runs inside container)
+    show_tensorboard_info
     echo ""
 
     run_training

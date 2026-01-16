@@ -231,6 +231,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable dataset packing to reduce padding for short samples.",
     )
+    parser.add_argument(
+        "--tensorboard",
+        action="store_true",
+        help="Enable TensorBoard logging for training metrics visualization.",
+    )
     return parser.parse_args()
 
 
@@ -407,6 +412,13 @@ def train(args: argparse.Namespace) -> Path:
     adapter_dir = output_dir / "adapters"
     adapter_dir.mkdir(parents=True, exist_ok=True)
 
+    # Set up TensorBoard logging directory
+    tensorboard_dir = output_dir / "tensorboard"
+    if args.tensorboard:
+        tensorboard_dir.mkdir(parents=True, exist_ok=True)
+        LOG.info("TensorBoard logging enabled. Logs will be saved to: %s", tensorboard_dir)
+        LOG.info("To view: tensorboard --logdir %s", tensorboard_dir)
+
     training_args = SFTConfig(
         output_dir=str(adapter_dir),
         per_device_train_batch_size=args.micro_batch_size,
@@ -423,7 +435,8 @@ def train(args: argparse.Namespace) -> Path:
         gradient_checkpointing=args.gradient_checkpointing,
         optim="paged_adamw_32bit",
         lr_scheduler_type="cosine",
-        report_to="none",
+        report_to="tensorboard" if args.tensorboard else "none",
+        logging_dir=str(tensorboard_dir) if args.tensorboard else None,
         seed=args.seed,
         max_length=args.max_seq_length,
         packing=args.packing,
