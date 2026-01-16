@@ -430,6 +430,7 @@ jobs:
           fi
 
           echo "Container ready: ${SIF_PATH}"
+          echo "SIF_PATH=${SIF_PATH}" >> $OUTPUTS
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
         env:
@@ -444,15 +445,22 @@ jobs:
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
           WORKDIR="${HOME}/pw/activate-medical-finetuning"
           
-          # Determine SIF path
-          if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
-            export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
-          elif [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
-            export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
-          else
-            echo "Error: Singularity image not found"
-            exit 1
+          # Get SIF path from build-container job output
+          export SIF_PATH="${{ needs.build-container.outputs.SIF_PATH }}"
+          
+          # Fallback if output not available
+          if [ -z "${SIF_PATH}" ] || [ ! -f "${SIF_PATH}" ]; then
+            if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
+              export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+            elif [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
+              export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
+            else
+              echo "Error: Singularity image not found"
+              exit 1
+            fi
           fi
+          
+          echo "Using Singularity image: ${SIF_PATH}"
           
           # Export all training configuration as environment variables
           export OUTPUT_DIR="${OUTPUT_DIR}"
