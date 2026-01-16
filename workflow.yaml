@@ -397,9 +397,6 @@ jobs:
               echo "Dataset will be downloaded on first use and cached for future runs"
             fi
           fi
-
-          echo "DATASET_DIR=${DATASET_DIR}" >> $GITHUB_ENV
-          echo "HF_DATASETS_CACHE=${DATASET_CACHE_DIR}" >> $GITHUB_ENV
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
@@ -432,7 +429,7 @@ jobs:
             fi
           fi
 
-          echo "SIF_PATH=${SIF_PATH}" >> $GITHUB_ENV
+          echo "Container ready: ${SIF_PATH}"
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
         env:
