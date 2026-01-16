@@ -278,7 +278,7 @@ on:
       tensorboard_config:
         type: group
         label: TensorBoard Monitoring
-        collapsed: false
+        collapsed: true
         items:
           tensorboard_enabled:
             label: Enable TensorBoard
