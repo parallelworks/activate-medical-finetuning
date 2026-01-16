@@ -498,7 +498,6 @@ jobs:
 
   finetune:
     needs: [build-container, prepare-dataset]
-    timeout: 24h
     steps:
       - name: Execute fine-tuning
         early-cancel: any-job-failed
@@ -619,14 +618,32 @@ jobs:
           fi
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
-        timeout: 24h
 
       - name: Validate outputs
         early-cancel: any-job-failed
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${PW_RUN_ID}"
+          
+          echo "======================================"
+          echo "Output Validation Debug"
+          echo "======================================"
+          echo "OUTPUT_DIR: ${OUTPUT_DIR}"
+          echo "PW_RUN_ID: ${PW_RUN_ID}"
+          echo ""
+          echo "Contents of OUTPUT_DIR:"
+          ls -la "${OUTPUT_DIR}" 2>/dev/null || echo "OUTPUT_DIR does not exist"
+          echo ""
+          echo "Looking for adapters directory..."
+          find "${OUTPUT_DIR}" -type d -name "adapters" 2>/dev/null || echo "No adapters directory found"
+          echo ""
+          echo "All directories in OUTPUT_DIR:"
+          find "${OUTPUT_DIR}" -type d 2>/dev/null | head -20 || echo "No directories found"
+          echo "======================================"
+          
           if [ ! -d "${OUTPUT_DIR}/adapters" ]; then
-            echo "Error: No adapter outputs found"
+            echo "Error: No adapter outputs found at ${OUTPUT_DIR}/adapters"
+            echo "Checking if adapters exist elsewhere..."
+            find "${HOME}/pw/outputs" -type d -name "adapters" 2>/dev/null | head -5
             exit 1
           fi
 
