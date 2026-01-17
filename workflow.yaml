@@ -7,7 +7,7 @@
 # via Singularity containers. Generates vLLM-compatible merged weights.
 #
 # Organized Input Sections:
-#   1. Infrastructure & Compute    - GPU cluster, containers, storage
+#   1. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
 #   2. Model Selection             - Base model and configuration presets
 #   3. Dataset Configuration       - Training data and sampling
 #   4. Training Hyperparameters    - Optimizer and batch settings
@@ -32,6 +32,154 @@ on:
         label: GPU Cluster
         type: compute-clusters
         optional: false
+        autoselect: true
+        include-workspace: false
+
+      scheduler:
+        type: group
+        label: Scheduler Options
+        tooltip: Configure job scheduler (SLURM/PBS) for HPC execution
+        items:
+          enabled:
+            type: boolean
+            label: Submit to Job Scheduler
+            tooltip: Enable to submit job via SLURM or PBS scheduler (detected automatically from resource). Disable for direct SSH execution.
+            default: false
+
+          type_override:
+            type: dropdown
+            label: Scheduler Type Override
+            tooltip: Use when resource metadata is missing/incorrect. Auto uses the resource scheduler type.
+            default: auto
+            hidden: ${{ inputs.scheduler.enabled != true }}
+            options:
+              - value: auto
+                label: Auto (resource)
+              - value: slurm
+                label: SLURM
+              - value: pbs
+                label: PBS
+
+          slurm:
+            type: group
+            label: SLURM Configuration
+            hidden: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+            collapsed: true
+            items:
+              is_disabled:
+                type: boolean
+                default: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+                hidden: true
+
+              account:
+                label: Account
+                type: slurm-accounts
+                resource: ${{ inputs.cluster }}
+                tooltip: SLURM account for job submission (--account)
+                optional: true
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              partition:
+                type: slurm-partitions
+                label: Partition
+                optional: true
+                resource: ${{ inputs.cluster }}
+                tooltip: Partition for job submission (--partition)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              qos:
+                label: Quality of Service (QoS)
+                type: slurm-qos
+                resource: ${{ inputs.cluster }}
+                tooltip: SLURM QoS setting (--qos)
+                optional: true
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              cpus_per_task:
+                type: number
+                label: CPUs per Task
+                min: 1
+                max: 256
+                default: 1
+                tooltip: Number of CPUs for the job (--cpus-per-task)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              time:
+                label: Walltime
+                type: string
+                default: 04:00:00
+                tooltip: Maximum job duration, e.g., 04:00:00 (--time)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              gres:
+                label: GPUs (gres)
+                type: dropdown
+                default: "gpu:1"
+                tooltip: GPU resource specification (--gres). Keep in sync with training GPU count.
+                options:
+                  - value: "gpu:1"
+                    label: "1 GPU (gpu:1)"
+                  - value: "gpu:2"
+                    label: "2 GPUs (gpu:2)"
+                  - value: "gpu:4"
+                    label: "4 GPUs (gpu:4)"
+                  - value: "gpu:8"
+                    label: "8 GPUs (gpu:8)"
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+              scheduler_directives:
+                type: editor
+                label: Additional Directives
+                optional: true
+                tooltip: Additional SLURM directives (include #SBATCH prefix)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+
+          pbs:
+            type: group
+            label: PBS Configuration
+            hidden: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+            collapsed: true
+            items:
+              is_disabled:
+                type: boolean
+                default: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+                hidden: true
+
+              account:
+                label: Account
+                type: string
+                optional: true
+                tooltip: PBS account for job submission (-A)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+
+              queue:
+                label: Queue
+                type: string
+                optional: true
+                tooltip: PBS queue name (-q)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+
+              walltime:
+                label: Walltime
+                type: string
+                default: 04:00:00
+                tooltip: Maximum job duration, e.g., 04:00:00 (-l walltime=)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+
+              select:
+                label: Resource Selection
+                type: string
+                default: "1:ncpus=8:ngpus=1"
+                placeholder: "1:ncpus=8:ngpus=1"
+                tooltip: PBS resource selection string, e.g., 1:ncpus=8:ngpus=1 (-l select=)
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+
+              scheduler_directives:
+                label: Additional Directives
+                type: editor
+                tooltip: Additional PBS directives (include #PBS prefix)
+                optional: true
+                ignore: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
 
       model_selection:
         type: group
@@ -400,12 +548,16 @@ jobs:
           
           cd "${RUNDIR}"
           git log -1 --oneline
+
+          # Clean up any stale marker/output files from previous runs
+          rm -f jobid SESSION_PORT job.started job.ended run.out HOSTNAME
           
           # Create output directory
           mkdir -p "${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
           
           # Output RUN_ID for downstream jobs
           echo "RUN_ID=${PW_JOB_NUMBER}" >> $OUTPUTS
+          echo "RUNDIR=${RUNDIR}" >> $OUTPUTS
           
           echo "======================================"
           echo "Job Configuration"
@@ -524,17 +676,22 @@ jobs:
 
   finetune:
     needs: [build-container, prepare-dataset, prepare_job_directory]
+    working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
+    ssh:
+      remoteHost: ${{ inputs.cluster.ip }}
     steps:
-      - name: Execute fine-tuning
+      - name: Create fine-tuning script
         early-cancel: any-job-failed
         run: |
+          SCRIPT_PATH="${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh"
+          cat > "${SCRIPT_PATH}" << 'EOF'
+          #!/bin/bash
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
-          WORKDIR="${{ inputs.infrastructure.rundir }}"
-          WORKDIR="${WORKDIR/#\~/$HOME}"  # Expand tilde
-          
+          WORKDIR="${{ needs.prepare_job_directory.outputs.RUNDIR }}"
+
           # Get SIF path from build-container job output
           export SIF_PATH="${{ needs.build-container.outputs.SIF_PATH }}"
-          
+
           # Fallback if output not available
           if [ -z "${SIF_PATH}" ] || [ ! -f "${SIF_PATH}" ]; then
             if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
@@ -546,12 +703,12 @@ jobs:
               exit 1
             fi
           fi
-          
+
           echo "Using Singularity image: ${SIF_PATH}"
-          
+
           # Export all training configuration as environment variables
           export OUTPUT_DIR="${OUTPUT_DIR}"
-          
+
           # Set MODEL_ID based on source (HuggingFace or local path)
           if [ "${{ inputs.model_selection.model_source }}" == "local" ]; then
             export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
@@ -560,7 +717,7 @@ jobs:
             export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
             echo "Using HuggingFace model: ${MODEL_ID}"
           fi
-          
+
           export DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
           export DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
           export DATASET_SPLIT="${{ inputs.dataset_config.dataset_split }}"
@@ -571,14 +728,14 @@ jobs:
           export MAX_SAMPLES="${{ inputs.dataset_config.max_samples }}"
           export DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
           export HF_DATASETS_CACHE="${{ inputs.dataset_config.dataset_cache_dir }}"
-          
+
           # Training hyperparameters
           export NUM_EPOCHS="${{ inputs.training_hyperparameters.num_epochs }}"
           export LEARNING_RATE="${{ inputs.training_hyperparameters.learning_rate }}"
           export MICRO_BATCH_SIZE="${{ inputs.training_hyperparameters.micro_batch_size }}"
           export GRADIENT_ACCUMULATION="${{ inputs.training_hyperparameters.gradient_accumulation }}"
           export MAX_SEQ_LENGTH="${{ inputs.training_hyperparameters.max_seq_length }}"
-          
+
           # LoRA configuration
           export LORA_R="${{ inputs.lora_config.lora_r }}"
           export LORA_ALPHA="${{ inputs.lora_config.lora_alpha }}"
@@ -587,17 +744,17 @@ jobs:
           export BF16="${{ inputs.lora_config.bf16 }}"
           export GRADIENT_CHECKPOINTING="${{ inputs.lora_config.gradient_checkpointing }}"
           export PACKING="${{ inputs.lora_config.packing }}"
-          
+
           # Output configuration
           export MERGE_FULL_WEIGHTS="${{ inputs.output_publishing.merge_full_weights }}"
           export MERGED_SAVE_FORMAT="${{ inputs.output_publishing.merged_save_format }}"
-          
+
           # TensorBoard configuration (auto-configured for PW session proxy)
           export TENSORBOARD_ENABLED="${{ inputs.tensorboard_config.tensorboard_enabled }}"
           export TENSORBOARD_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
           export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.session }}"
           export TENSORBOARD_BIND_ALL="true"
-          
+
           # Debug: Log TensorBoard configuration
           echo "====================================="
           echo "TensorBoard Debug Info"
@@ -608,20 +765,20 @@ jobs:
           echo "TENSORBOARD_PORT: ${TENSORBOARD_PORT}"
           echo "TENSORBOARD_ENABLED: ${TENSORBOARD_ENABLED}"
           echo "====================================="
-          
+
           # Restrict to single GPU for QLoRA training (avoids DataParallel issues)
           export CUDA_VISIBLE_DEVICES="0"
-          
+
           # HuggingFace Hub configuration
           if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
             export HF_TOKEN="${{ inputs.output_publishing.hf_token }}"
           fi
-          
+
           # Handle bucket dataset source
           if [ "${{ inputs.dataset_config.dataset_source }}" == "bucket" ]; then
             export DATASET_DIR="${OUTPUT_DIR}/dataset"
           fi
-          
+
           echo "======================================"
           echo "Training Configuration"
           echo "======================================"
@@ -632,18 +789,48 @@ jobs:
           echo "Max Samples: ${MAX_SAMPLES}"
           echo "TensorBoard: ${TENSORBOARD_ENABLED}"
           echo "======================================"
-          
+
           # Execute training using run.sh
           cd "${WORKDIR}"
           ./scripts/run.sh
-          
+
           echo "Training completed. Checking outputs..."
           ls -la "${OUTPUT_DIR}/adapters" 2>/dev/null || echo "No adapters found"
           if [ "${MERGE_FULL_WEIGHTS}" == "true" ]; then
             ls -la "${OUTPUT_DIR}/merged" 2>/dev/null || echo "No merged weights found"
           fi
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
+          EOF
+          chmod +x "${SCRIPT_PATH}"
+
+      - name: Run fine-tuning
+        uses: marketplace/job_runner/v4.0
+        early-cancel: any-job-failed
+        with:
+          resource: ${{ inputs.cluster }}
+          shebang: '#!/bin/bash'
+          rundir: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
+          use_existing_script: true
+          script_path: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh
+          scheduler: ${{ inputs.scheduler.enabled }}
+          inject_markers: true
+          slurm:
+            is_disabled: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'slurm') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'slurm') }}
+            account: ${{ inputs.scheduler.slurm.account }}
+            partition: ${{ inputs.scheduler.slurm.partition }}
+            qos: ${{ inputs.scheduler.slurm.qos }}
+            time: ${{ inputs.scheduler.slurm.time }}
+            cpus_per_task: ${{ inputs.scheduler.slurm.cpus_per_task }}
+            gres: ${{ inputs.scheduler.slurm.gres }}
+            scheduler_directives: |
+              ${{ inputs.scheduler.slurm.scheduler_directives }}
+          pbs:
+            is_disabled: ${{ inputs.scheduler.enabled != true || (inputs.scheduler.type_override == 'auto' && inputs.cluster.schedulerType != 'pbs') || (inputs.scheduler.type_override != 'auto' && inputs.scheduler.type_override != 'pbs') }}
+            account: ${{ inputs.scheduler.pbs.account }}
+            queue: ${{ inputs.scheduler.pbs.queue }}
+            walltime: ${{ inputs.scheduler.pbs.walltime }}
+            select: ${{ inputs.scheduler.pbs.select }}
+            scheduler_directives: |
+              ${{ inputs.scheduler.pbs.scheduler_directives }}
 
       - name: Validate outputs
         early-cancel: any-job-failed
@@ -686,8 +873,6 @@ jobs:
             echo "Merged weight files:"
             ls -la "${OUTPUT_DIR}/merged"
           fi
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
 
   tensorboard-session:
     needs: [build-container, prepare-dataset]
