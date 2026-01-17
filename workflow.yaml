@@ -548,6 +548,9 @@ jobs:
           
           cd "${RUNDIR}"
           git log -1 --oneline
+
+          # Clean up any stale marker/output files from previous runs
+          rm -f jobid SESSION_PORT job.started job.ended run.out HOSTNAME
           
           # Create output directory
           mkdir -p "${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
