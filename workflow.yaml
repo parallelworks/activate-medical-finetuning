@@ -32,6 +32,8 @@ on:
         label: GPU Cluster
         type: compute-clusters
         optional: false
+        autoselect: true
+        include-workspace: false
 
       scheduler:
         type: group
