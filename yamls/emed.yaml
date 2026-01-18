@@ -7,8 +7,8 @@
 # via Singularity containers. Generates vLLM-compatible merged weights.
 #
 # Organized Input Sections:
-#   1. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
-#   2. Model Selection             - Base model and configuration presets
+#   1. Model Selection             - Base model and configuration presets
+#   2. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
 #   3. Dataset Configuration       - Training data and sampling
 #   4. Training Hyperparameters    - Optimizer and batch settings
 #   5. LoRA / PEFT Configuration   - Adapter and quantization settings
@@ -28,6 +28,51 @@ sessions:
 on:
   execute:
     inputs:
+      model_selection:
+        type: group
+        label: Model Selection
+        collapsed: false
+        items:
+          model_config:
+            label: Configuration Preset
+            type: dropdown
+            default: llama3-8b-medical-quick
+            optional: true
+            options:
+              - value: llama3-8b-medical-quick
+                label: Llama 3 8B Medical (Quick Test)
+              - value: llama3-8b-medical
+                label: Llama 3 8B Medical (Production)
+              - value: mistral-7b-medical
+                label: Mistral 7B Medical
+              - value: gemma-7b-medical
+                label: Gemma 7B Medical
+
+          model_source:
+            label: Model Source
+            type: dropdown
+            default: huggingface
+            options:
+              - value: huggingface
+                label: HuggingFace Hub
+              - value: local
+                label: Local Path (pre-downloaded weights)
+
+          base_model_id:
+            label: Base Model ID (HuggingFace)
+            type: string
+            default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
+            optional: true
+            hidden: ${{ inputs.model_selection.model_source == 'local' }}
+
+          local_model_path:
+            label: Local Model Path
+            type: string
+            default: "/models/Llama-3.1-8B-Instruct"
+            optional: true
+            hidden: ${{ inputs.model_selection.model_source != 'local' }}
+            tooltip: Path to pre-downloaded model weights directory
+
       cluster:
         label: GPU Cluster
         type: compute-clusters
@@ -195,51 +240,6 @@ on:
             tooltip: Additional PBS directives (include #PBS prefix)
             optional: true
             ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
-
-      model_selection:
-        type: group
-        label: Model Selection
-        collapsed: false
-        items:
-          model_config:
-            label: Configuration Preset
-            type: dropdown
-            default: llama3-8b-medical-quick
-            optional: true
-            options:
-              - value: llama3-8b-medical-quick
-                label: Llama 3 8B Medical (Quick Test)
-              - value: llama3-8b-medical
-                label: Llama 3 8B Medical (Production)
-              - value: mistral-7b-medical
-                label: Mistral 7B Medical
-              - value: gemma-7b-medical
-                label: Gemma 7B Medical
-
-          model_source:
-            label: Model Source
-            type: dropdown
-            default: huggingface
-            options:
-              - value: huggingface
-                label: HuggingFace Hub
-              - value: local
-                label: Local Path (pre-downloaded weights)
-
-          base_model_id:
-            label: Base Model ID (HuggingFace)
-            type: string
-            default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
-            optional: true
-            hidden: ${{ inputs.model_selection.model_source == 'local' }}
-
-          local_model_path:
-            label: Local Model Path
-            type: string
-            default: "/models/Llama-3.1-8B-Instruct"
-            optional: true
-            hidden: ${{ inputs.model_selection.model_source != 'local' }}
-            tooltip: Path to pre-downloaded model weights directory
 
       infrastructure:
         type: group
