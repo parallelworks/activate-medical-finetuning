@@ -7,8 +7,8 @@
 # via Singularity containers. Generates vLLM-compatible merged weights.
 #
 # Organized Input Sections:
-#   1. Model Selection             - Base model and configuration presets
-#   2. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
+#   1. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
+#   2. Model Selection             - Base model and configuration presets
 #   3. Dataset Configuration       - Training data and sampling
 #   4. Training Hyperparameters    - Optimizer and batch settings
 #   5. LoRA / PEFT Configuration   - Adapter and quantization settings
@@ -28,6 +28,13 @@ sessions:
 on:
   execute:
     inputs:
+      cluster:
+        label: GPU Cluster
+        type: compute-clusters
+        optional: false
+        autoselect: true
+        include-workspace: false
+
       model_selection:
         type: group
         label: Model Selection
@@ -72,13 +79,6 @@ on:
             optional: true
             hidden: ${{ inputs.model_selection.model_source != 'local' }}
             tooltip: Path to pre-downloaded model weights directory
-
-      cluster:
-        label: GPU Cluster
-        type: compute-clusters
-        optional: false
-        autoselect: true
-        include-workspace: false
 
       submit_to_scheduler:
         type: boolean
