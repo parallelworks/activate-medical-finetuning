@@ -1,0 +1,1049 @@
+# yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+---
+# ==============================================================================
+# Medical LLM Fine-tuning Workflow
+# ==============================================================================
+# Fine-tunes LLMs (Llama2/3, Mistral, Gemma) on medical datasets using QLoRA/LoRA
+# via Singularity containers. Generates vLLM-compatible merged weights.
+#
+# Organized Input Sections:
+#   1. Infrastructure & Compute    - GPU cluster, scheduler, containers, storage
+#   2. Model Selection             - Base model and configuration presets
+#   3. Dataset Configuration       - Training data and sampling
+#   4. Training Hyperparameters    - Optimizer and batch settings
+#   5. LoRA / PEFT Configuration   - Adapter and quantization settings
+#   6. TensorBoard Monitoring      - Training visualization
+#   7. Output & Publishing         - Model merging and hub publishing
+# ==============================================================================
+
+permissions:
+  - '*'
+
+sessions:
+  session:
+    useTLS: false
+    redirect: true
+    useCustomDomain: false
+
+on:
+  execute:
+    inputs:
+      cluster:
+        label: GPU Cluster
+        type: compute-clusters
+        optional: false
+        autoselect: true
+        include-workspace: false
+
+      submit_to_scheduler:
+        type: boolean
+        label: Submit to Job Scheduler
+        tooltip: Enable to submit job via SLURM or PBS scheduler (detected automatically from resource). Disable for direct SSH execution.
+        default: true
+        hidden: true
+
+      slurm:
+        type: group
+        label: SLURM Configuration
+        hidden: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+        collapsed: true
+        items:
+          is_disabled:
+            type: boolean
+            default: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+            hidden: true
+
+          cluster:
+            type: dropdown
+            label: SLURM Cluster
+            default: default
+            options:
+              - value: default
+                label: Default
+              - value: hpc4
+                label: HPC4 (-M hpc4)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          account:
+            label: Account
+            type: slurm-accounts
+            resource: ${{ inputs.cluster }}
+            tooltip: SLURM account for job submission (--account)
+            optional: true
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          partition:
+            type: slurm-partitions
+            label: Partition
+            optional: true
+            resource: ${{ inputs.cluster }}
+            tooltip: Partition for job submission (--partition)
+            hidden: ${{ inputs.slurm.cluster == 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster == 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          partition_hpc4:
+            type: dropdown
+            label: Partition (HPC4)
+            optional: true
+            tooltip: Partition for HPC4 (-M hpc4)
+            default: normal
+            options: [normal, gpu, gpu-h200, gpu-quick, ht, large-mem, quick, test, unlimited]
+            hidden: ${{ inputs.slurm.cluster != 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster != 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          qos:
+            label: Quality of Service (QoS)
+            type: slurm-qos
+            resource: ${{ inputs.cluster }}
+            tooltip: SLURM QoS setting (--qos)
+            optional: true
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          cpus_per_task:
+            type: number
+            label: CPUs per Task
+            min: 1
+            max: 256
+            default: 1
+            tooltip: Number of CPUs for the job (--cpus-per-task)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          time:
+            label: Walltime
+            type: string
+            default: 01:00:00
+            tooltip: Maximum job duration, e.g., 04:00:00 (--time)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          gres:
+            label: GPUs (gres)
+            type: dropdown
+            default: "gpu:4"
+            tooltip: GPU resource specification (--gres). Keep in sync with training GPU count.
+            options:
+              - value: "gpu:1"
+                label: "1 GPU (gpu:1)"
+              - value: "gpu:2"
+                label: "2 GPUs (gpu:2)"
+              - value: "gpu:4"
+                label: "4 GPUs (gpu:4)"
+              - value: "gpu:8"
+                label: "8 GPUs (gpu:8)"
+            hidden: ${{ inputs.slurm.cluster == 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster == 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          gres_gpu_hpc4:
+            type: number
+            label: Number of GPUs (HPC4)
+            min: 1
+            max: 4
+            default: 4
+            tooltip: GPUs per node for HPC4 (mapped to --gres=gpu:X)
+            hidden: ${{ inputs.slurm.cluster != 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster != 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          scheduler_directives:
+            type: editor
+            label: Additional Directives
+            optional: true
+            tooltip: Additional SLURM directives (include #SBATCH prefix)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+      pbs:
+        type: group
+        label: PBS Configuration
+        hidden: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+        collapsed: true
+        items:
+          is_disabled:
+            type: boolean
+            default: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+            hidden: true
+
+          account:
+            label: Account
+            type: string
+            optional: true
+            tooltip: PBS account for job submission (-A)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+
+          queue:
+            label: Queue
+            type: string
+            optional: true
+            tooltip: PBS queue name (-q)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+
+          walltime:
+            label: Walltime
+            type: string
+            default: 04:00:00
+            tooltip: Maximum job duration, e.g., 04:00:00 (-l walltime=)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+
+          select:
+            label: Resource Selection
+            type: string
+            default: "1:ncpus=8:ngpus=1"
+            placeholder: "1:ncpus=8:ngpus=1"
+            tooltip: PBS resource selection string, e.g., 1:ncpus=8:ngpus=1 (-l select=)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+
+          scheduler_directives:
+            label: Additional Directives
+            type: editor
+            tooltip: Additional PBS directives (include #PBS prefix)
+            optional: true
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+
+      model_selection:
+        type: group
+        label: Model Selection
+        collapsed: false
+        items:
+          model_config:
+            label: Configuration Preset
+            type: dropdown
+            default: llama3-8b-medical-quick
+            optional: true
+            options:
+              - value: llama3-8b-medical-quick
+                label: Llama 3 8B Medical (Quick Test)
+              - value: llama3-8b-medical
+                label: Llama 3 8B Medical (Production)
+              - value: mistral-7b-medical
+                label: Mistral 7B Medical
+              - value: gemma-7b-medical
+                label: Gemma 7B Medical
+
+          model_source:
+            label: Model Source
+            type: dropdown
+            default: huggingface
+            options:
+              - value: huggingface
+                label: HuggingFace Hub
+              - value: local
+                label: Local Path (pre-downloaded weights)
+
+          base_model_id:
+            label: Base Model ID (HuggingFace)
+            type: string
+            default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
+            optional: true
+            hidden: ${{ inputs.model_selection.model_source == 'local' }}
+
+          local_model_path:
+            label: Local Model Path
+            type: string
+            default: "/models/Llama-3.1-8B-Instruct"
+            optional: true
+            hidden: ${{ inputs.model_selection.model_source != 'local' }}
+            tooltip: Path to pre-downloaded model weights directory
+
+      infrastructure:
+        type: group
+        label: Infrastructure & Compute
+        collapsed: true
+        items:
+          rundir:
+            label: Run Directory
+            type: string
+            default: "~/pw/activate-medical-finetuning"
+            optional: false
+
+          repository:
+            label: Repository URL
+            type: string
+            default: "https://github.com/parallelworks/activate-medical-finetuning.git"
+            optional: true
+
+          repository_branch:
+            label: Repository Branch
+            type: string
+            default: "main"
+            optional: true
+
+          singularity_image:
+            label: Singularity Image Path (Optional)
+            type: string
+            default: "/home/$USER/pw/singularity/medical-finetune.sif"
+            optional: true
+
+      dataset_config:
+        type: group
+        label: Dataset Configuration
+        collapsed: true
+        items:
+          dataset_source:
+            label: Dataset Source
+            type: dropdown
+            default: huggingface
+            options:
+              - value: huggingface
+                label: HuggingFace Hub
+              - value: local
+                label: Local File Path
+              - value: bucket
+                label: PW Storage Bucket
+
+          dataset_cache_dir:
+            label: Dataset Cache Directory
+            type: string
+            default: "/home/$USER/pw/datasets"
+            optional: true
+            tooltip: Shared location for caching HuggingFace datasets across runs
+
+          dataset_name:
+            label: Dataset Name (HuggingFace)
+            type: string
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 'Shekswess/medical_llama3_instruct_dataset_short' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'Shekswess/medical_mistral_instruct_dataset' : (inputs.model_selection.model_config == 'gemma-7b-medical' ? 'Shekswess/medical_gemma_instruct_dataset' : 'Shekswess/medical_llama3_instruct_dataset')) }}"
+            hidden: ${{ inputs.dataset_config.dataset_source != 'huggingface' }}
+
+          dataset_bucket:
+            label: Dataset Storage Bucket
+            type: storage
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'bucket' }}
+
+          dataset_bucket_path:
+            label: Dataset Bucket Path
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'bucket' }}
+
+          local_dataset_path:
+            label: Local Dataset Path
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'local' }}
+
+          dataset_split:
+            label: Dataset Split
+            type: string
+            default: train
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source == 'bucket' }}
+
+          dataset_config_name:
+            label: Dataset Config Name
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'huggingface' }}
+
+          dataset_format:
+            label: Dataset Format
+            type: dropdown
+            default: json
+            optional: true
+            hidden: ${{ inputs.dataset_config.dataset_source != 'local' }}
+            options:
+              - value: json
+                label: JSON / JSONL
+              - value: csv
+                label: CSV
+              - value: parquet
+                label: Parquet
+              - value: arrow
+                label: Arrow
+              - value: dataset
+                label: HuggingFace Dataset Directory
+
+          prompt_field:
+            label: Prompt Field Name
+            type: string
+            default: prompt
+            optional: true
+
+          max_samples:
+            label: Max Samples (0 = all)
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 50 : 0 }}"
+            optional: true
+
+      training_hyperparameters:
+        type: group
+        label: Training Hyperparameters
+        collapsed: true
+        items:
+          num_epochs:
+            label: Training Epochs
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 1.0 : 3.0 }}"
+            optional: true
+
+          learning_rate:
+            label: Learning Rate
+            type: number
+            default: 0.0002
+            optional: true
+
+          micro_batch_size:
+            label: Micro Batch Size (per GPU)
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 2 : 1 }}"
+            optional: true
+
+          gradient_accumulation:
+            label: Gradient Accumulation Steps
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 8 : 16 }}"
+            optional: true
+
+          max_seq_length:
+            label: Max Sequence Length (tokens)
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 512 : 2048 }}"
+            optional: true
+
+      lora_config:
+        type: group
+        label: LoRA / PEFT Configuration
+        collapsed: true
+        items:
+          lora_r:
+            label: LoRA Rank (r)
+            type: number
+            default: "${{ inputs.model_selection.model_config == 'llama3-8b-medical-quick' ? 32 : 64 }}"
+            optional: true
+
+          lora_alpha:
+            label: LoRA Alpha
+            type: number
+            default: 16
+            optional: true
+
+          lora_dropout:
+            label: LoRA Dropout Rate
+            type: number
+            default: 0.05
+            optional: true
+
+          quantization:
+            label: Quantization Mode
+            type: dropdown
+            default: 4bit
+            optional: true
+            options:
+              - value: 4bit
+              - value: 8bit
+              - value: none
+
+          gradient_checkpointing:
+            label: Enable Gradient Checkpointing
+            type: boolean
+            default: true
+            optional: true
+
+          bf16:
+            label: Use BF16 Mixed Precision
+            type: boolean
+            default: true
+            optional: true
+
+          packing:
+            label: Enable Dataset Packing
+            type: boolean
+            default: false
+            optional: true
+
+      tensorboard_config:
+        type: group
+        label: TensorBoard Monitoring
+        collapsed: true
+        items:
+          tensorboard_enabled:
+            label: Enable TensorBoard
+            type: boolean
+            default: true
+            optional: true
+
+          tensorboard_port:
+            label: TensorBoard Port
+            type: number
+            default: 6006
+            optional: true
+            hidden: ${{ !inputs.tensorboard_config.tensorboard_enabled }}
+
+      output_publishing:
+        type: group
+        label: Output & Publishing
+        collapsed: true
+        items:
+          merge_full_weights:
+            label: Merge LoRA into Full Weights
+            type: boolean
+            default: true
+            optional: true
+
+          merged_save_format:
+            label: Merged Weights Format
+            type: dropdown
+            default: safetensors
+            optional: true
+            options:
+              - value: safetensors
+                label: SafeTensors (.safetensors)
+              - value: bin
+                label: PyTorch Binary (.bin)
+
+          upload_destination:
+            label: Upload Weights To
+            type: dropdown
+            default: none
+            optional: true
+            options:
+              - value: none
+                label: No Upload (keep on cluster)
+              - value: pw_bucket
+                label: PW Storage Bucket
+              - value: huggingface
+                label: HuggingFace Hub
+
+          bucket_name:
+            label: PW Bucket Name
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'pw_bucket' }}
+            tooltip: "Bucket name for upload (e.g., my-bucket). Will upload as pw://bucket-name/medical-finetune-JOBID.tgz"
+
+          hub_model_id:
+            label: Hub Model ID (username/model-name)
+            type: string
+            default: ""
+            optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'huggingface' }}
+
+          hf_token:
+            label: HuggingFace Access Token
+            type: password
+            default: ${{ org.HF_TOKEN }}
+            optional: true
+            hidden: ${{ inputs.output_publishing.upload_destination != 'huggingface' }}
+
+
+jobs:
+  prepare_job_directory:
+    steps:
+      - name: Verify GPU availability
+        early-cancel: any-job-failed
+        run: |
+          echo "Checking GPU availability on ${{ inputs.cluster.name }}..."
+          nvidia-smi || { echo "No GPU available"; exit 1; }
+          echo "GPU(s) found:"
+          nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Preparing Run Directory
+        early-cancel: any-job-failed
+        run: |
+          RUNDIR="${{ inputs.infrastructure.rundir }}"
+          RUNDIR="${RUNDIR/#\~/$HOME}"  # Expand tilde
+          
+          mkdir -p $(dirname "${RUNDIR}")
+          
+          if [ -d "${RUNDIR}/.git" ]; then
+            echo "Repository exists, updating..."
+            cd "${RUNDIR}"
+            git fetch origin
+            git checkout ${{ inputs.infrastructure.repository_branch }}
+            git branch --set-upstream-to=origin/${{ inputs.infrastructure.repository_branch }} 2>/dev/null || true
+            git pull
+          else
+            echo "Cloning repository..."
+            rm -rf "${RUNDIR}"
+            git clone -b ${{ inputs.infrastructure.repository_branch }} ${{ inputs.infrastructure.repository }} "${RUNDIR}"
+          fi
+          
+          cd "${RUNDIR}"
+          git log -1 --oneline
+
+          # Clean up any stale marker/output files from previous runs
+          rm -f jobid SESSION_PORT job.started job.ended run.out HOSTNAME
+          
+          # Create output directory
+          mkdir -p "${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          
+          # Output RUN_ID for downstream jobs
+          echo "RUN_ID=${PW_JOB_NUMBER}" >> $OUTPUTS
+          echo "RUNDIR=${RUNDIR}" >> $OUTPUTS
+          
+          echo "======================================"
+          echo "Job Configuration"
+          echo "======================================"
+          echo "PW_JOB_NUMBER: ${PW_JOB_NUMBER}"
+          echo "RUNDIR: ${RUNDIR}"
+          echo "OUTPUT_DIR: ${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
+          echo "======================================"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  prepare-dataset:
+    needs: [prepare_job_directory]
+    steps:
+      - name: Prepare dataset based on source
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          DATASET_DIR="${OUTPUT_DIR}/dataset"
+          DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
+          mkdir -p "${DATASET_DIR}" "${DATASET_CACHE_DIR}"
+
+          DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
+          DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
+          echo "Dataset source: ${DATASET_SOURCE}"
+
+          if [ "${DATASET_SOURCE}" == "bucket" ]; then
+            echo "Downloading dataset from PW Storage Bucket..."
+            BUCKET="${{ inputs.dataset_config.dataset_bucket }}"
+            BUCKET_PATH="${{ inputs.dataset_config.dataset_bucket_path }}"
+
+            if [ -z "${BUCKET}" ] || [ -z "${BUCKET_PATH}" ]; then
+              echo "Error: bucket and bucket_path must be specified for bucket source"
+              exit 1
+            fi
+
+            pw storage cp -r "${BUCKET}/${BUCKET_PATH}" "${DATASET_DIR}/"
+            echo "Dataset downloaded to ${DATASET_DIR}"
+            ls -la "${DATASET_DIR}"
+
+          elif [ "${DATASET_SOURCE}" == "local" ]; then
+            echo "Using local dataset path..."
+            LOCAL_PATH="${{ inputs.dataset_config.local_dataset_path }}"
+
+            if [ ! -e "${LOCAL_PATH}" ]; then
+              echo "Error: Local dataset path not found: ${LOCAL_PATH}"
+              exit 1
+            fi
+
+            if [ -f "${LOCAL_PATH}" ]; then
+              cp "${LOCAL_PATH}" "${DATASET_DIR}/"
+            elif [ -d "${LOCAL_PATH}" ]; then
+              cp -r "${LOCAL_PATH}"/* "${DATASET_DIR}/"
+            fi
+            echo "Dataset copied to ${DATASET_DIR}"
+            ls -la "${DATASET_DIR}"
+
+          else
+            echo "Using HuggingFace Hub dataset: ${DATASET_NAME}"
+            echo "Cache directory: ${DATASET_CACHE_DIR}"
+            
+            # Check if dataset is already cached
+            # HuggingFace datasets library will use HF_DATASETS_CACHE
+            export HF_DATASETS_CACHE="${DATASET_CACHE_DIR}"
+            
+            # Create a marker file to track cached datasets
+            CACHE_MARKER="${DATASET_CACHE_DIR}/.cached_datasets"
+            if grep -q "^${DATASET_NAME}$" "${CACHE_MARKER}" 2>/dev/null; then
+              echo "Dataset '${DATASET_NAME}' found in cache!"
+            else
+              echo "Dataset will be downloaded on first use and cached for future runs"
+            fi
+          fi
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  build-container:
+    needs: [prepare-dataset]
+    steps:
+      - name: Build Singularity container
+        early-cancel: any-job-failed
+        run: |
+          RUNDIR="${{ inputs.infrastructure.rundir }}"
+          RUNDIR="${RUNDIR/#\~/$HOME}"  # Expand tilde
+          
+          CONTAINER_DIR="${HOME}/pw/singularity"
+          mkdir -p "${CONTAINER_DIR}"
+          cd "${CONTAINER_DIR}"
+
+          if [ -n "${{ inputs.infrastructure.singularity_image }}" ]; then
+            echo "Using provided Singularity image: ${{ inputs.infrastructure.singularity_image }}"
+            if [ ! -f "${{ inputs.infrastructure.singularity_image }}" ]; then
+              echo "Error: Image not found at ${{ inputs.infrastructure.singularity_image }}"
+              exit 1
+            fi
+            export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+          else
+            DEF_FILE="${RUNDIR}/singularity/finetune.def"
+            SIF_PATH="${CONTAINER_DIR}/medical-finetune.sif"
+
+            if [ ! -f "${SIF_PATH}" ]; then
+              echo "Building Singularity image from ${DEF_FILE}..."
+              sudo singularity build "${SIF_PATH}" "${DEF_FILE}" || \
+                singularity build "${SIF_PATH}" "${DEF_FILE}"
+            else
+              echo "Using existing Singularity image: ${SIF_PATH}"
+            fi
+          fi
+
+          echo "Container ready: ${SIF_PATH}"
+          echo "SIF_PATH=${SIF_PATH}" >> $OUTPUTS
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+        env:
+          SINGULARITY_DISABLE_CACHE: "false"
+
+  derive_scheduler:
+    needs: [prepare_job_directory]
+    ssh:
+      remoteHost: ${{ inputs.cluster.ip }}
+    steps:
+      - name: Compute SLURM Overrides
+        id: compute
+        run: |
+          set -x
+          cluster="${{ inputs.slurm.cluster }}"
+          partition="${{ inputs.slurm.partition }}"
+          gres="${{ inputs.slurm.gres }}"
+          directives=""
+
+          if [[ "$cluster" == "hpc4" ]]; then
+            partition="${{ inputs.slurm.partition_hpc4 }}"
+            gres="gpu:${{ inputs.slurm.gres_gpu_hpc4 }}"
+            directives="#SBATCH -M hpc4"
+          fi
+
+          echo "slurm_partition=${partition}" | tee -a "$OUTPUTS"
+          echo "slurm_gres=${gres}" | tee -a "$OUTPUTS"
+          echo "slurm_directives=${directives}" | tee -a "$OUTPUTS"
+
+  finetune:
+    needs: [build-container, prepare-dataset, prepare_job_directory, derive_scheduler]
+    working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
+    ssh:
+      remoteHost: ${{ inputs.cluster.ip }}
+    steps:
+      - name: Create fine-tuning script
+        early-cancel: any-job-failed
+        run: |
+          SCRIPT_PATH="${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh"
+          cat > "${SCRIPT_PATH}" << 'EOF'
+          #!/bin/bash
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          WORKDIR="${{ needs.prepare_job_directory.outputs.RUNDIR }}"
+
+          # Get SIF path from build-container job output
+          export SIF_PATH="${{ needs.build-container.outputs.SIF_PATH }}"
+
+          # Fallback if output not available
+          if [ -z "${SIF_PATH}" ] || [ ! -f "${SIF_PATH}" ]; then
+            if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
+              export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
+            elif [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
+              export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
+            else
+              echo "Error: Singularity image not found"
+              exit 1
+            fi
+          fi
+
+          echo "Using Singularity image: ${SIF_PATH}"
+
+          # Export all training configuration as environment variables
+          export OUTPUT_DIR="${OUTPUT_DIR}"
+
+          # Set MODEL_ID based on source (HuggingFace or local path)
+          if [ "${{ inputs.model_selection.model_source }}" == "local" ]; then
+            export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
+            echo "Using local model weights: ${MODEL_ID}"
+          else
+            export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+            echo "Using HuggingFace model: ${MODEL_ID}"
+          fi
+
+          export DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"
+          export DATASET_NAME="${{ inputs.dataset_config.dataset_name }}"
+          export DATASET_SPLIT="${{ inputs.dataset_config.dataset_split }}"
+          export DATASET_CONFIG_NAME="${{ inputs.dataset_config.dataset_config_name }}"
+          export PROMPT_FIELD="${{ inputs.dataset_config.prompt_field }}"
+          export LOCAL_DATASET_PATH="${{ inputs.dataset_config.local_dataset_path }}"
+          export DATASET_FORMAT="${{ inputs.dataset_config.dataset_format }}"
+          export MAX_SAMPLES="${{ inputs.dataset_config.max_samples }}"
+          export DATASET_CACHE_DIR="${{ inputs.dataset_config.dataset_cache_dir }}"
+          export HF_DATASETS_CACHE="${{ inputs.dataset_config.dataset_cache_dir }}"
+
+          # Training hyperparameters
+          export NUM_EPOCHS="${{ inputs.training_hyperparameters.num_epochs }}"
+          export LEARNING_RATE="${{ inputs.training_hyperparameters.learning_rate }}"
+          export MICRO_BATCH_SIZE="${{ inputs.training_hyperparameters.micro_batch_size }}"
+          export GRADIENT_ACCUMULATION="${{ inputs.training_hyperparameters.gradient_accumulation }}"
+          export MAX_SEQ_LENGTH="${{ inputs.training_hyperparameters.max_seq_length }}"
+
+          # LoRA configuration
+          export LORA_R="${{ inputs.lora_config.lora_r }}"
+          export LORA_ALPHA="${{ inputs.lora_config.lora_alpha }}"
+          export LORA_DROPOUT="${{ inputs.lora_config.lora_dropout }}"
+          export QUANTIZATION="${{ inputs.lora_config.quantization }}"
+          export BF16="${{ inputs.lora_config.bf16 }}"
+          export GRADIENT_CHECKPOINTING="${{ inputs.lora_config.gradient_checkpointing }}"
+          export PACKING="${{ inputs.lora_config.packing }}"
+
+          # Output configuration
+          export MERGE_FULL_WEIGHTS="${{ inputs.output_publishing.merge_full_weights }}"
+          export MERGED_SAVE_FORMAT="${{ inputs.output_publishing.merged_save_format }}"
+
+          # TensorBoard configuration (auto-configured for PW session proxy)
+          export TENSORBOARD_ENABLED="${{ inputs.tensorboard_config.tensorboard_enabled }}"
+          export TENSORBOARD_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
+          export TENSORBOARD_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.session }}"
+          export TENSORBOARD_BIND_ALL="true"
+
+          # Debug: Log TensorBoard configuration
+          echo "====================================="
+          echo "TensorBoard Debug Info"
+          echo "====================================="
+          echo "PW_USER: ${PW_USER}"
+          echo "SESSION_NAME: ${{ sessions.session }}"
+          echo "TENSORBOARD_PATH_PREFIX: ${TENSORBOARD_PATH_PREFIX}"
+          echo "TENSORBOARD_PORT: ${TENSORBOARD_PORT}"
+          echo "TENSORBOARD_ENABLED: ${TENSORBOARD_ENABLED}"
+          echo "====================================="
+
+          # Restrict to single GPU for QLoRA training (avoids DataParallel issues)
+          export CUDA_VISIBLE_DEVICES="0"
+
+          # HuggingFace Hub configuration
+          if [ -n "${{ inputs.output_publishing.hf_token }}" ]; then
+            export HF_TOKEN="${{ inputs.output_publishing.hf_token }}"
+          fi
+
+          # Handle bucket dataset source
+          if [ "${{ inputs.dataset_config.dataset_source }}" == "bucket" ]; then
+            export DATASET_DIR="${OUTPUT_DIR}/dataset"
+          fi
+
+          echo "======================================"
+          echo "Training Configuration"
+          echo "======================================"
+          echo "Model: ${MODEL_ID}"
+          echo "Dataset Source: ${DATASET_SOURCE}"
+          echo "Dataset: ${DATASET_NAME:-${LOCAL_DATASET_PATH:-bucket}}"
+          echo "Epochs: ${NUM_EPOCHS}"
+          echo "Max Samples: ${MAX_SAMPLES}"
+          echo "TensorBoard: ${TENSORBOARD_ENABLED}"
+          echo "======================================"
+
+          # Execute training using run.sh
+          cd "${WORKDIR}"
+          ./scripts/run.sh
+
+          echo "Training completed. Checking outputs..."
+          ls -la "${OUTPUT_DIR}/adapters" 2>/dev/null || echo "No adapters found"
+          if [ "${MERGE_FULL_WEIGHTS}" == "true" ]; then
+            ls -la "${OUTPUT_DIR}/merged" 2>/dev/null || echo "No merged weights found"
+          fi
+          EOF
+          chmod +x "${SCRIPT_PATH}"
+
+      - name: Run fine-tuning
+        uses: marketplace/job_runner/v4.0
+        early-cancel: any-job-failed
+        with:
+          resource: ${{ inputs.cluster }}
+          shebang: '#!/bin/bash'
+          rundir: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
+          use_existing_script: true
+          script_path: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh
+          scheduler: ${{ inputs.submit_to_scheduler }}
+          inject_markers: true
+          slurm:
+            is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+            account: ${{ inputs.slurm.account }}
+            partition: ${{ needs.derive_scheduler.outputs.slurm_partition }}
+            qos: ${{ inputs.slurm.qos }}
+            time: ${{ inputs.slurm.time }}
+            cpus_per_task: ${{ inputs.slurm.cpus_per_task }}
+            gres: ${{ needs.derive_scheduler.outputs.slurm_gres }}
+            scheduler_directives: |
+              ${{ needs.derive_scheduler.outputs.slurm_directives }}
+              ${{ inputs.slurm.scheduler_directives }}
+          pbs:
+            is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
+            account: ${{ inputs.pbs.account }}
+            queue: ${{ inputs.pbs.queue }}
+            walltime: ${{ inputs.pbs.walltime }}
+            select: ${{ inputs.pbs.select }}
+            scheduler_directives: |
+              ${{ inputs.pbs.scheduler_directives }}
+
+      - name: Validate outputs
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          
+          echo "======================================"
+          echo "Output Validation Debug"
+          echo "======================================"
+          echo "OUTPUT_DIR: ${OUTPUT_DIR}"
+          echo "RUN_ID: ${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          echo ""
+          echo "Contents of OUTPUT_DIR:"
+          ls -la "${OUTPUT_DIR}" 2>/dev/null || echo "OUTPUT_DIR does not exist"
+          echo ""
+          echo "Looking for adapters directory..."
+          find "${OUTPUT_DIR}" -type d -name "adapters" 2>/dev/null || echo "No adapters directory found"
+          echo ""
+          echo "All directories in OUTPUT_DIR:"
+          find "${OUTPUT_DIR}" -type d 2>/dev/null | head -20 || echo "No directories found"
+          echo "======================================"
+          
+          if [ ! -d "${OUTPUT_DIR}/adapters" ]; then
+            echo "Error: No adapter outputs found at ${OUTPUT_DIR}/adapters"
+            echo "Checking if adapters exist elsewhere..."
+            find "${HOME}/pw/outputs" -type d -name "adapters" 2>/dev/null | head -5
+            exit 1
+          fi
+
+          if [ "${{ inputs.output_publishing.merge_full_weights }}" == "true" ] && [ ! -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Error: Merge requested but no merged weights found"
+            exit 1
+          fi
+
+          echo "Training outputs validated successfully"
+          echo "Adapter files:"
+          ls -la "${OUTPUT_DIR}/adapters"
+
+          if [ -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Merged weight files:"
+            ls -la "${OUTPUT_DIR}/merged"
+          fi
+
+  tensorboard-session:
+    needs: [build-container, prepare-dataset]
+    if: ${{ inputs.tensorboard_config.tensorboard_enabled }}
+    steps:
+      - name: Wait for TensorBoard to start
+        early-cancel: any-job-failed
+        run: |
+          echo "Waiting for TensorBoard to be available on port ${{ inputs.tensorboard_config.tensorboard_port }}..."
+          # Wait up to 5 minutes for TensorBoard to start (finetune job starts it)
+          for i in {1..150}; do
+            if nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; then
+              echo "TensorBoard is running on port ${{ inputs.tensorboard_config.tensorboard_port }}!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Warning: TensorBoard did not start within timeout"
+          exit 1
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+          
+      - name: Update TensorBoard Session
+        uses: parallelworks/update-session
+        with:
+          remotePort: ${{ inputs.tensorboard_config.tensorboard_port }}
+          name: ${{ sessions.session }}
+          status: running
+          target: ${{ inputs.cluster.id }}
+          slug: ""
+          
+      - name: Keep session alive during training
+        run: |
+          echo "TensorBoard session is active. Waiting for training to complete..."
+          # Keep session job running - it will be terminated when workflow completes
+          while nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; do
+            sleep 30
+          done
+          echo "TensorBoard stopped - training likely completed"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+  upload-outputs:
+    needs: [finetune, prepare_job_directory]
+    if: ${{ inputs.output_publishing.upload_destination != 'none' }}
+    steps:
+      - name: Upload weights to PW bucket
+        if: ${{ inputs.output_publishing.upload_destination == 'pw_bucket' }}
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          BUCKET_NAME="${{ inputs.output_publishing.bucket_name }}"
+          ARCHIVE_NAME="medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}.tgz"
+
+          if [ -z "${BUCKET_NAME}" ]; then
+            echo "Error: Bucket name is required for PW bucket upload"
+            exit 1
+          fi
+
+          echo "Creating archive of outputs..."
+          cd "${OUTPUT_DIR}"
+          tar -czvf "/tmp/${ARCHIVE_NAME}" .
+
+          echo "Uploading to pw://${BUCKET_NAME}/${ARCHIVE_NAME}..."
+          pw bucket cp "/tmp/${ARCHIVE_NAME}" "pw://${BUCKET_NAME}/${ARCHIVE_NAME}"
+
+          echo "Upload complete!"
+          echo "Download with: pw bucket cp pw://${BUCKET_NAME}/${ARCHIVE_NAME} ."
+          
+          # Cleanup temp file
+          rm -f "/tmp/${ARCHIVE_NAME}"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Upload weights to HuggingFace Hub
+        if: ${{ inputs.output_publishing.upload_destination == 'huggingface' }}
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          HUB_MODEL_ID="${{ inputs.output_publishing.hub_model_id }}"
+          
+          if [ -z "${HUB_MODEL_ID}" ]; then
+            echo "Error: Hub Model ID is required for HuggingFace upload"
+            exit 1
+          fi
+
+          echo "Uploading to HuggingFace Hub: ${HUB_MODEL_ID}..."
+          
+          # Upload merged weights if available, otherwise adapters
+          if [ -d "${OUTPUT_DIR}/merged" ]; then
+            echo "Uploading merged weights..."
+            huggingface-cli upload "${HUB_MODEL_ID}" "${OUTPUT_DIR}/merged" --token "${HF_TOKEN}"
+          elif [ -d "${OUTPUT_DIR}/adapters" ]; then
+            echo "Uploading adapter weights..."
+            huggingface-cli upload "${HUB_MODEL_ID}" "${OUTPUT_DIR}/adapters" --token "${HF_TOKEN}"
+          else
+            echo "Error: No weights found to upload"
+            exit 1
+          fi
+
+          echo "Upload complete!"
+          echo "View at: https://huggingface.co/${HUB_MODEL_ID}"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+        env:
+          HF_TOKEN: ${{ inputs.output_publishing.hf_token }}
+
+  cleanup:
+    needs: [finetune, prepare_job_directory]
+    if: ${{ always }}
+    steps:
+      - name: Display training summary
+        early-cancel: any-job-failed
+        run: |
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          echo "======================================"
+          echo "Medical LLM Fine-tuning Summary"
+          echo "======================================"
+          echo "Run ID: ${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          echo "Model: ${{ inputs.model_selection.base_model_id }}"
+          echo "Dataset: ${{ inputs.dataset_config.dataset_name }}"
+          echo "Output Directory: ${OUTPUT_DIR}"
+          echo ""
+          if [ -f "${OUTPUT_DIR}/logs/finetune.log" ]; then
+            echo "Last 20 lines of training log:"
+            tail -20 "${OUTPUT_DIR}/logs/finetune.log"
+          fi
+          echo "======================================"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
+# Note: Configuration presets are now implemented via dynamic defaults in the form inputs.
+# When user selects a preset from the dropdown, all related fields automatically update.
+# Users can still override any value after selecting a preset.
