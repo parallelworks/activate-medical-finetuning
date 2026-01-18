@@ -28,7 +28,7 @@
 #   ./scripts/run.sh --dataset-source local --local-dataset ./data.jsonl
 #
 #   # Use existing container
-#   ./scripts/run_local.sh --sif-path ~/pw/singularity/medical-finetune.sif
+#   ./scripts/run_local.sh --sif-path ~/pw/singularity/finetune.sif
 # ==============================================================================
 
 # Colors for output
@@ -54,7 +54,7 @@ DATASET_SPLIT="${DATASET_SPLIT:-train}"
 DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-${HF_DATASETS_CACHE:-${HOME}/pw/datasets}}"
 PROMPT_FIELD="${PROMPT_FIELD:-prompt}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORKFLOW_ROOT}/output}"
-SIF_PATH="${SIF_PATH:-${HOME}/pw/singularity/medical-finetune.sif}"
+SIF_PATH="${SIF_PATH:-${HOME}/pw/singularity/finetune.sif}"
 DEF_FILE="${DEF_FILE:-${WORKFLOW_ROOT}/singularity/finetune.def}"
 BUILD_CONTAINER="${BUILD_CONTAINER:-false}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"

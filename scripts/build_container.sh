@@ -10,7 +10,7 @@
 #
 # Options:
 #   --sudo      Use sudo for building (required on some systems)
-#   --output    Custom output path (default: ~/pw/singularity/medical-finetune.sif)
+#   --output    Custom output path (default: ~/pw/singularity/finetune.sif)
 # ==============================================================================
 
 # Colors for output
@@ -27,7 +27,7 @@ WORKFLOW_ROOT="$(dirname "${SCRIPT_DIR}")"
 # Default values
 USE_SUDO=""
 OUTPUT_DIR="${HOME}/pw/singularity"
-OUTPUT_FILE="${OUTPUT_DIR}/medical-finetune.sif"
+OUTPUT_FILE="${OUTPUT_DIR}/finetune.sif"
 DEF_FILE="${WORKFLOW_ROOT}/singularity/finetune.def"
 
 # ==============================================================================
@@ -58,7 +58,7 @@ Build the Singularity container for the medical fine-tuning workflow.
 
 Options:
   --sudo      Use sudo for building (required on some systems)
-  --output    Custom output path (default: ~/pw/singularity/medical-finetune.sif)
+  --output    Custom output path (default: ~/pw/singularity/finetune.sif)
   --help, -h  Show this help message
 
 Examples:

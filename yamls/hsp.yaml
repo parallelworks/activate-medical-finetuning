@@ -59,26 +59,45 @@ on:
             label: Model Source
             type: dropdown
             default: huggingface
+            tooltip: Use a pre-downloaded model (local) or clone from HuggingFace using git-lfs
             options:
-              - value: huggingface
-                label: HuggingFace Hub
               - value: local
-                label: Local Path (pre-downloaded weights)
+                label: "Local Path (pre-staged weights)"
+              - value: huggingface
+                label: "HuggingFace Clone (git-lfs)"
 
           base_model_id:
-            label: Base Model ID (HuggingFace)
+            label: HuggingFace Model ID
             type: string
             default: "${{ inputs.model_selection.model_config == 'gemma-7b-medical' ? 'google/gemma-1.1-7b-it' : (inputs.model_selection.model_config == 'mistral-7b-medical' ? 'mistralai/Mistral-7B-Instruct-v0.2' : 'meta-llama/Llama-3.1-8B-Instruct') }}"
             optional: true
+            tooltip: Model ID to clone from HuggingFace via git-lfs
             hidden: ${{ inputs.model_selection.model_source == 'local' }}
 
           local_model_path:
-            label: Local Model Path
+            label: Model Path
             type: string
             default: "/models/Llama-3.1-8B-Instruct"
             optional: true
             hidden: ${{ inputs.model_selection.model_source != 'local' }}
-            tooltip: Path to pre-downloaded model weights directory
+            tooltip: Full path to directory containing model weights
+
+          hf_token:
+            label: HuggingFace Token
+            optional: true
+            default: ${{ org.HF_TOKEN }}
+            type: password
+            tooltip: Required for gated models (Llama, etc.)
+            hidden: ${{ inputs.model_selection.model_source != 'huggingface' }}
+            ignore: ${{ inputs.model_selection.model_source != 'huggingface' }}
+
+          model_cache_dir:
+            type: string
+            label: Model Cache Directory
+            default: ~/pw/models
+            tooltip: Directory to clone model into. Model is cloned once and reused for subsequent runs. Ensure sufficient disk space.
+            hidden: ${{ inputs.model_selection.model_source != 'huggingface' }}
+            ignore: ${{ inputs.model_selection.model_source != 'huggingface' }}
 
       submit_to_scheduler:
         type: boolean
@@ -232,11 +251,58 @@ on:
             default: "main"
             optional: true
 
-          singularity_image:
-            label: Singularity Image Path (Optional)
+      container:
+        type: group
+        label: Container Options
+        collapsed: true
+        items:
+          source:
+            type: dropdown
+            label: Container Source
+            default: lfs
+            tooltip: How to obtain Apptainer/Singularity container
+            options:
+              - value: lfs
+                label: "Git LFS repo (default)"
+              - value: path
+                label: "Use existing path"
+              - value: pull
+                label: "Pull from bucket"
+              - value: build
+                label: "Build from source (requires sudo/fakeroot)"
+
+          lfs_repo:
+            label: LFS Repo
             type: string
-            default: "/home/$USER/pw/singularity/medical-finetune.sif"
-            optional: true
+            default: "~/singularity-containers"
+            tooltip: Git repo containing LFS SIF parts (finetune/finetune.*.sif)
+            hidden: ${{ inputs.container.source != 'lfs' }}
+            ignore: ${{ inputs.container.source != 'lfs' }}
+
+          lfs_branch:
+            label: LFS Branch
+            type: string
+            default: main
+            tooltip: Branch to pull from the LFS repo
+            hidden: ${{ inputs.container.source != 'lfs' }}
+            ignore: ${{ inputs.container.source != 'lfs' }}
+
+          bucket:
+            label: Container Bucket
+            type: string
+            default: ""
+            tooltip: Bucket containing finetune.sif container
+            hidden: ${{ inputs.container.source != 'pull' }}
+            ignore: ${{ inputs.container.source != 'pull' }}
+
+          finetune_path:
+            label: Finetune Container Path
+            type: string
+            default: ~/pw/singularity/finetune.sif
+            placeholder: ~/pw/singularity/finetune.sif
+            tooltip: Path to finetune.sif container (use existing or build destination)
+            hidden: ${{ inputs.container.source == 'pull' }}
+            ignore: ${{ inputs.container.source == 'pull' }}
 
       dataset_config:
         type: group
@@ -552,6 +618,95 @@ jobs:
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
+  prepare-model:
+    needs: [prepare_job_directory]
+    if: ${{ inputs.model_selection.model_source == 'huggingface' }}
+    steps:
+      - name: Clone HuggingFace model
+        early-cancel: any-job-failed
+        run: |
+          set -euo pipefail
+          cd "${{ needs.prepare_job_directory.outputs.RUNDIR }}"
+
+          command -v git >/dev/null 2>&1 || { echo "ERROR: git not found"; exit 1; }
+
+          MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+          CACHE_DIR="${{ inputs.model_selection.model_cache_dir }}"
+          CACHE_DIR="${CACHE_DIR/#\~/$HOME}"
+          HF_TOKEN="${{ inputs.model_selection.hf_token }}"
+
+          mkdir -p "${CACHE_DIR}"
+          MODEL_BASENAME="${MODEL_ID##*/}"
+          LEGACY_DIR="${CACHE_DIR}/${MODEL_ID//\//__}"
+          TARGET_DIR="${CACHE_DIR}/${MODEL_BASENAME}"
+
+          if [[ -d "${LEGACY_DIR}" && ! -d "${TARGET_DIR}" ]]; then
+            echo "Renaming legacy cache dir ${LEGACY_DIR} to ${TARGET_DIR}"
+            mv "${LEGACY_DIR}" "${TARGET_DIR}"
+          fi
+
+          if [[ -d "${TARGET_DIR}" && -f "${TARGET_DIR}/config.json" ]]; then
+            echo "Model already cached at ${TARGET_DIR}"
+          else
+            echo "Cloning model ${MODEL_ID} to ${TARGET_DIR}"
+
+            # Ensure git-lfs is available
+            if ! git lfs version >/dev/null 2>&1; then
+              echo "Installing git-lfs locally..."
+              mkdir -p "${HOME}/bin"
+              cd /tmp
+              if command -v curl >/dev/null 2>&1; then
+                LFS_URL=$(curl -s https://api.github.com/repos/git-lfs/git-lfs/releases/latest | grep browser_download_url | grep linux-amd64 | head -1 | cut -d '"' -f 4)
+              elif command -v wget >/dev/null 2>&1; then
+                LFS_URL=$(wget -qO- https://api.github.com/repos/git-lfs/git-lfs/releases/latest | grep browser_download_url | grep linux-amd64 | head -1 | cut -d '"' -f 4)
+              else
+                echo "ERROR: curl or wget required to install git-lfs"
+                exit 1
+              fi
+              [[ -z "$LFS_URL" ]] && { echo "ERROR: Could not find git-lfs download URL"; exit 1; }
+              if command -v wget >/dev/null 2>&1; then
+                wget -q "$LFS_URL" -O git-lfs-linux-amd64.tar.gz
+              else
+                curl -L "$LFS_URL" -o git-lfs-linux-amd64.tar.gz
+              fi
+              tar -xzf git-lfs-linux-amd64.tar.gz
+              ./git-lfs-*/install.sh --local
+              rm -rf git-lfs-*
+              export PATH="${HOME}/bin:${PATH}"
+              cd "${{ needs.prepare_job_directory.outputs.RUNDIR }}"
+              git lfs version >/dev/null 2>&1 || { echo "ERROR: Failed to install git-lfs"; exit 1; }
+            fi
+
+            git lfs install
+
+            REPO_URL="https://huggingface.co/${MODEL_ID}"
+            [[ -n "${HF_TOKEN}" ]] && REPO_URL="https://user:${HF_TOKEN}@huggingface.co/${MODEL_ID}"
+
+            GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 "${REPO_URL}" "${TARGET_DIR}"
+            cd "${TARGET_DIR}"
+            git lfs pull
+            cd ..
+
+            # Verify model weights exist (not just LFS pointers)
+            if [[ -f "${TARGET_DIR}/model.safetensors" ]]; then
+              actual_size=$(stat -c%s "${TARGET_DIR}/model.safetensors" 2>/dev/null || stat -f%z "${TARGET_DIR}/model.safetensors" 2>/dev/null)
+              [[ ${actual_size} -lt 1000000 ]] && { echo "ERROR: model.safetensors appears to be an LFS pointer, not actual weights"; exit 1; }
+            elif ls "${TARGET_DIR}"/model*.safetensors 1>/dev/null 2>&1; then
+              for f in "${TARGET_DIR}"/model*.safetensors; do
+                actual_size=$(stat -c%s "${f}" 2>/dev/null || stat -f%z "${f}" 2>/dev/null)
+                [[ ${actual_size} -lt 1000000 ]] && { echo "ERROR: ${f} appears to be an LFS pointer, not actual weights"; exit 1; }
+                break
+              done
+            fi
+
+            [[ ! -f "${TARGET_DIR}/config.json" ]] && { echo "ERROR: Model clone incomplete - missing config.json"; exit 1; }
+          fi
+
+          echo "MODEL_PATH=${TARGET_DIR}" >> $OUTPUTS
+          echo "Model ready at ${TARGET_DIR}"
+        ssh:
+          remoteHost: ${{ inputs.cluster.ip }}
+
   prepare-dataset:
     needs: [prepare_job_directory]
     steps:
@@ -620,35 +775,216 @@ jobs:
   build-container:
     needs: [prepare-dataset]
     steps:
-      - name: Build Singularity container
+      - name: Prepare Singularity container
         early-cancel: any-job-failed
         run: |
+          set -euo pipefail
           RUNDIR="${{ inputs.infrastructure.rundir }}"
           RUNDIR="${RUNDIR/#\~/$HOME}"  # Expand tilde
-          
-          CONTAINER_DIR="${HOME}/pw/singularity"
-          mkdir -p "${CONTAINER_DIR}"
-          cd "${CONTAINER_DIR}"
 
-          if [ -n "${{ inputs.infrastructure.singularity_image }}" ]; then
-            echo "Using provided Singularity image: ${{ inputs.infrastructure.singularity_image }}"
-            if [ ! -f "${{ inputs.infrastructure.singularity_image }}" ]; then
-              echo "Error: Image not found at ${{ inputs.infrastructure.singularity_image }}"
+          CONTAINER_SOURCE="${{ inputs.container.source }}"
+          FINETUNE_PATH="${{ inputs.container.finetune_path }}"
+          FINETUNE_PATH="${FINETUNE_PATH/#\~/$HOME}"
+          if [ -z "${FINETUNE_PATH}" ]; then
+            FINETUNE_PATH="${HOME}/pw/singularity/finetune.sif"
+          fi
+
+          install_git_lfs() {
+            if git lfs version >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "git-lfs not found; attempting install..."
+            if command -v apt-get >/dev/null 2>&1; then
+              if sudo -n true 2>/dev/null; then
+                sudo apt-get update -y && sudo apt-get install -y git-lfs
+              else
+                apt-get update -y && apt-get install -y git-lfs
+              fi
+            elif command -v dnf >/dev/null 2>&1; then
+              if sudo -n true 2>/dev/null; then
+                sudo dnf install -y git-lfs
+              else
+                dnf install -y git-lfs
+              fi
+            elif command -v yum >/dev/null 2>&1; then
+              if sudo -n true 2>/dev/null; then
+                sudo yum install -y git-lfs
+              else
+                yum install -y git-lfs
+              fi
+            elif command -v microdnf >/dev/null 2>&1; then
+              if sudo -n true 2>/dev/null; then
+                sudo microdnf install -y git-lfs
+              else
+                microdnf install -y git-lfs
+              fi
+            elif command -v zypper >/dev/null 2>&1; then
+              if sudo -n true 2>/dev/null; then
+                sudo zypper --non-interactive install git-lfs
+              else
+                zypper --non-interactive install git-lfs
+              fi
+            else
+              echo "ERROR: git-lfs not found and no supported package manager available."
               exit 1
             fi
-            export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
-          else
-            DEF_FILE="${RUNDIR}/singularity/finetune.def"
-            SIF_PATH="${CONTAINER_DIR}/medical-finetune.sif"
+            git lfs version >/dev/null 2>&1 || { echo "ERROR: git-lfs install failed"; exit 1; }
+          }
 
-            if [ ! -f "${SIF_PATH}" ]; then
-              echo "Building Singularity image from ${DEF_FILE}..."
-              sudo singularity build "${SIF_PATH}" "${DEF_FILE}" || \
-                singularity build "${SIF_PATH}" "${DEF_FILE}"
-            else
-              echo "Using existing Singularity image: ${SIF_PATH}"
-            fi
-          fi
+          case "${CONTAINER_SOURCE}" in
+            path)
+              if [ ! -f "${FINETUNE_PATH}" ]; then
+                echo "Error: Image not found at ${FINETUNE_PATH}"
+                exit 1
+              fi
+              SIF_PATH="${FINETUNE_PATH}"
+              ;;
+            pull)
+              BUCKET="${{ inputs.container.bucket }}"
+              if [ -z "${BUCKET}" ]; then
+                echo "Error: container bucket must be specified for pull source"
+                exit 1
+              fi
+              SIF_PATH="${RUNDIR}/finetune.sif"
+              if [ ! -f "${SIF_PATH}" ]; then
+                pw bucket cp "${BUCKET}/finetune.sif" "${SIF_PATH}"
+              else
+                echo "Using existing container: ${SIF_PATH}"
+              fi
+              ;;
+            lfs)
+              command -v git >/dev/null 2>&1 || { echo "ERROR: git not found"; exit 1; }
+              install_git_lfs
+              export GIT_LFS_SKIP_SMUDGE=1
+
+              LFS_REPO="${{ inputs.container.lfs_repo }}"
+              LFS_REPO="${LFS_REPO/#\~/$HOME}"
+              LFS_BRANCH="${{ inputs.container.lfs_branch }}"
+              LFS_DIR="${RUNDIR}/.lfs_containers"
+              REV_FILE="${RUNDIR}/.lfs_containers_rev"
+
+              if [ -z "${LFS_REPO}" ]; then
+                echo "ERROR: LFS repo must be specified"
+                exit 1
+              fi
+
+              need_finetune=true
+              [[ -f "${FINETUNE_PATH}" ]] && need_finetune=false
+
+              remote_rev=$(git ls-remote "${LFS_REPO}" "${LFS_BRANCH}" | awk '{print $1}')
+              if [[ -z "${remote_rev}" ]]; then
+                echo "ERROR: Could not resolve ${LFS_BRANCH} in ${LFS_REPO}"
+                exit 1
+              fi
+              stored_rev=""
+              [[ -f "${REV_FILE}" ]] && stored_rev=$(cat "${REV_FILE}" || true)
+
+              if [[ "${need_finetune}" == "false" ]]; then
+                if [[ -n "${remote_rev}" && "${remote_rev}" == "${stored_rev}" ]]; then
+                  echo "Container already present and matches remote revision ${remote_rev}; skipping LFS pull."
+                else
+                  echo "Container already present; remote revision is ${remote_rev} (stored: ${stored_rev})."
+                  echo "Skipping LFS pull to avoid re-download. Remove container to force refresh."
+                fi
+                SIF_PATH="${FINETUNE_PATH}"
+              else
+                if [[ -d "${LFS_DIR}/.git" ]]; then
+                  git -C "${LFS_DIR}" fetch origin "${LFS_BRANCH}"
+                else
+                  GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "${LFS_BRANCH}" "${LFS_REPO}" "${LFS_DIR}"
+                fi
+
+                git -C "${LFS_DIR}" checkout -f "${LFS_BRANCH}"
+                git -C "${LFS_DIR}" reset --hard "origin/${LFS_BRANCH}"
+                git -C "${LFS_DIR}" lfs install --local
+
+                git -C "${LFS_DIR}" sparse-checkout init --no-cone
+                patterns=("finetune/finetune.*.sif" "finetune/finetune.sif.part_*" "finetune/finetune.sif" "scripts/sif_parts.sh")
+                git -C "${LFS_DIR}" sparse-checkout set --no-cone "${patterns[@]}"
+
+                lfs_include="finetune/finetune.*.sif,finetune/finetune.sif.part_*,finetune/finetune.sif"
+                git -C "${LFS_DIR}" config lfs.concurrenttransfers 4
+                git -C "${LFS_DIR}" config lfs.transfer.maxretries 10
+                git -C "${LFS_DIR}" config lfs.transfer.maxretrydelay 30
+                git -C "${LFS_DIR}" config lfs.fetchinclude "${lfs_include}"
+                git -C "${LFS_DIR}" config lfs.fetchexclude ""
+                attempt=1
+                max_attempts=2
+                while true; do
+                  echo "LFS pull attempt ${attempt}/${max_attempts}..."
+                  if git -C "${LFS_DIR}" lfs fetch; then
+                    break
+                  fi
+                  if [[ ${attempt} -ge ${max_attempts} ]]; then
+                    echo "ERROR: LFS pull failed after ${max_attempts} attempts"
+                    exit 1
+                  fi
+                  sleep $((attempt * 5))
+                  ((attempt++))
+                done
+                git -C "${LFS_DIR}" lfs checkout
+
+                assemble_sif() {
+                  local prefix=$1
+                  local target=$2
+                  local full="${LFS_DIR}/${prefix}/${prefix}.sif"
+                  mkdir -p "$(dirname "${target}")"
+
+                  if [[ -f "${full}" ]]; then
+                    cp "${full}" "${target}"
+                    return 0
+                  fi
+
+                  local script="${LFS_DIR}/scripts/sif_parts.sh"
+                  shopt -s nullglob
+                  local numeric_parts=("${LFS_DIR}/${prefix}/${prefix}."[0-9][0-9][0-9][0-9][0-9].sif)
+                  shopt -u nullglob
+                  if [[ -x "${script}" && ${#numeric_parts[@]} -gt 0 ]]; then
+                    bash "${script}" join --prefix "${prefix}" --in-dir "${LFS_DIR}" --output "${target}"
+                    return 0
+                  fi
+
+                  shopt -s nullglob
+                  local parts=("${LFS_DIR}/${prefix}/${prefix}."[0-9][0-9][0-9][0-9][0-9].sif "${LFS_DIR}/${prefix}/${prefix}.sif.part_"*)
+                  shopt -u nullglob
+
+                  if ((${#parts[@]} == 0)); then
+                    echo "ERROR: No parts found for ${prefix} in ${LFS_DIR}/${prefix}"
+                    exit 1
+                  fi
+
+                  mapfile -t parts_sorted < <(printf "%s\n" "${parts[@]}" | LC_ALL=C sort)
+                  cat "${parts_sorted[@]}" > "${target}"
+                }
+
+                echo "Assembling finetune container to ${FINETUNE_PATH}"
+                assemble_sif finetune "${FINETUNE_PATH}"
+                [[ -n "${remote_rev}" ]] && echo "${remote_rev}" > "${REV_FILE}"
+                SIF_PATH="${FINETUNE_PATH}"
+              fi
+              ;;
+            build)
+              DEF_FILE="${RUNDIR}/singularity/finetune.def"
+              SIF_PATH="${FINETUNE_PATH}"
+              mkdir -p "$(dirname "${SIF_PATH}")"
+
+              if [ ! -f "${SIF_PATH}" ]; then
+                echo "Building Singularity image from ${DEF_FILE}..."
+                if sudo -n true 2>/dev/null; then
+                  sudo singularity build "${SIF_PATH}" "${DEF_FILE}"
+                else
+                  singularity build --fakeroot "${SIF_PATH}" "${DEF_FILE}" || \
+                    singularity build "${SIF_PATH}" "${DEF_FILE}"
+                fi
+              else
+                echo "Using existing Singularity image: ${SIF_PATH}"
+              fi
+              ;;
+            *)
+              echo "Error: Unknown container source ${CONTAINER_SOURCE}"
+              exit 1
+              ;;
+          esac
 
           echo "Container ready: ${SIF_PATH}"
           echo "SIF_PATH=${SIF_PATH}" >> $OUTPUTS
@@ -658,7 +994,7 @@ jobs:
           SINGULARITY_DISABLE_CACHE: "false"
 
   finetune:
-    needs: [build-container, prepare-dataset, prepare_job_directory]
+    needs: [build-container, prepare-dataset, prepare_job_directory, prepare-model]
     working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
@@ -677,10 +1013,15 @@ jobs:
 
           # Fallback if output not available
           if [ -z "${SIF_PATH}" ] || [ ! -f "${SIF_PATH}" ]; then
-            if [ -n "${{ inputs.infrastructure.singularity_image }}" ] && [ -f "${{ inputs.infrastructure.singularity_image }}" ]; then
-              export SIF_PATH="${{ inputs.infrastructure.singularity_image }}"
-            elif [ -f "${HOME}/pw/singularity/medical-finetune.sif" ]; then
-              export SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
+            FINETUNE_PATH="${{ inputs.container.finetune_path }}"
+            FINETUNE_PATH="${FINETUNE_PATH/#\~/$HOME}"
+
+            if [ "${{ inputs.container.source }}" == "pull" ] && [ -f "${WORKDIR}/finetune.sif" ]; then
+              export SIF_PATH="${WORKDIR}/finetune.sif"
+            elif [ -n "${FINETUNE_PATH}" ] && [ -f "${FINETUNE_PATH}" ]; then
+              export SIF_PATH="${FINETUNE_PATH}"
+            elif [ -f "${HOME}/pw/singularity/finetune.sif" ]; then
+              export SIF_PATH="${HOME}/pw/singularity/finetune.sif"
             else
               echo "Error: Singularity image not found"
               exit 1
@@ -697,8 +1038,14 @@ jobs:
             export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
             echo "Using local model weights: ${MODEL_ID}"
           else
-            export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
-            echo "Using HuggingFace model: ${MODEL_ID}"
+            CLONED_MODEL="${{ needs.prepare-model.outputs.MODEL_PATH }}"
+            if [ -n "${CLONED_MODEL}" ] && [ -d "${CLONED_MODEL}" ]; then
+              export MODEL_ID="${CLONED_MODEL}"
+              echo "Using cached HuggingFace model: ${MODEL_ID}"
+            else
+              export MODEL_ID="${{ inputs.model_selection.base_model_id }}"
+              echo "Using HuggingFace model: ${MODEL_ID}"
+            fi
           fi
 
           export DATASET_SOURCE="${{ inputs.dataset_config.dataset_source }}"

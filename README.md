@@ -6,14 +6,14 @@ Parallel Works ACTIVATE workflow for fine-tuning LLMs (Llama2/3, Mistral, Gemma)
 
 ### 1. Build Singularity Container (Optional)
 
-The workflow auto-builds the container on the cluster, but you can pre-build locally:
+The workflow can pull a prebuilt container (default: Git LFS) or build from source. You can also pre-build locally:
 
 ```bash
 ./scripts/build_container.sh          # Build to default location
 ./scripts/build_container.sh --sudo   # Use sudo if needed
 ```
 
-Output: `~/pw/singularity/medical-finetune.sif`
+Output: `~/pw/singularity/finetune.sif`
 
 ### 2. Run in Parallel Works
 
@@ -103,8 +103,8 @@ medical-finetune-{RUN_ID}/
 
 | Section | Key Parameters |
 |---------|----------------|
-| **Infrastructure** | `singularity_image` (auto-builds if empty), `output_bucket` (optional) |
-| **Model** | `base_model_id`, `model_config` preset |
+| **Infrastructure** | `container.source`, `container.finetune_path`, `container.lfs_repo`/`container.bucket`, `output_bucket` (optional) |
+| **Model** | `model_source`, `base_model_id` or `local_model_path`, `model_cache_dir` |
 | **Dataset** | `dataset_source` (huggingface/local/bucket), `dataset_name` |
 | **Training** | `num_epochs`, `learning_rate`, `micro_batch_size` |
 | **LoRA** | `lora_r`, `lora_alpha`, `quantization` (4bit/8bit/none) |
@@ -159,7 +159,7 @@ Run the complete fine-tuning workflow locally without PW for development and deb
 ```
 
 The local runner handles:
-- Singularity container building (if needed)
+- Container retrieval/build (LFS, bucket, path, or build)
 - Dataset downloading/preparation
 - Full training execution
 - Output organization and logging
