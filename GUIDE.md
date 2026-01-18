@@ -39,22 +39,24 @@ Complete reference for the Parallel Works ACTIVATE Medical LLM Fine-tuning Workf
 
 ## Complete Parameter Reference
 
-The workflow is organized into 6 logical sections for easy configuration:
+The workflow is organized into 7 logical sections for easy configuration:
 
 ### Section 1: Infrastructure & Compute
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `cluster` | compute-clusters | *required* | GPU cluster for training |
-| `singularity_image` | string | `/home/$USER/pw/singularity/medical-finetune.sif` | Path to Singularity SIF file (auto-builds if not found) |
+| `container.source` | dropdown | `lfs` | Container source (lfs/path/pull/build) |
+| `container.finetune_path` | string | `~/pw/singularity/finetune.sif` | Path for existing/build container (path/build/lfs) |
+| `container.lfs_repo` | string | `~/singularity-containers` | LFS repo containing finetune SIF parts |
+| `container.bucket` | storage | `""` | Bucket containing finetune.sif (pull only) |
 | `output_bucket` | storage | `""` | Bucket to store trained weights (empty = skip upload, outputs stay on cluster) |
 
-**Singularity Container Behavior:**
-- The workflow checks if the SIF file exists at the specified path
-- If the file doesn't exist, it automatically builds from `singularity/finetune.def` on the cluster
-- Build location on cluster: `${HOME}/pw/singularity/medical-finetune.sif`
-- Leave as default to let the workflow handle building automatically
-- Only specify a custom path if you have a pre-built SIF file elsewhere
+**Container Behavior:**
+- `lfs` (default): pulls finetune parts from `container.lfs_repo`, assembles to `container.finetune_path`, and installs git-lfs if needed
+- `path`: uses an existing SIF at `container.finetune_path`
+- `pull`: downloads `finetune.sif` from `container.bucket` to the run directory
+- `build`: builds from `singularity/finetune.def` into `container.finetune_path` (requires sudo/fakeroot)
 
 **Output Bucket Behavior:**
 - Leave empty to skip bucket upload - outputs remain on the cluster at `${HOME}/pw/outputs/medical-finetune-{RUN_ID}/`
@@ -65,14 +67,22 @@ The workflow is organized into 6 logical sections for easy configuration:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `model_source` | dropdown | `huggingface` | Use local path or clone from HuggingFace (git-lfs) |
 | `model_config` | string | `llama3-8b-medical` | Predefined configuration preset |
-| `base_model_id` | string | `meta-llama/Llama-3.1-8B-Instruct` | HuggingFace model ID |
+| `base_model_id` | string | `meta-llama/Llama-3.1-8B-Instruct` | HuggingFace model ID (for git-lfs clone) |
+| `local_model_path` | string | `/models/Llama-3.1-8B-Instruct` | Local model directory (local source) |
+| `model_cache_dir` | string | `~/pw/models` | Cache directory for cloned models |
+| `hf_token` | password | `${{ org.HF_TOKEN }}` | HuggingFace token for gated models |
 
 **Supported Base Models:**
 - `meta-llama/Llama-3.1-8B-Instruct` (Llama 3)
 - `meta-llama/Llama-2-7b-chat-hf` (Llama 2)
 - `mistralai/Mistral-7B-Instruct-v0.2` (Mistral)
 - `google/gemma-1.1-7b-it` (Gemma)
+
+**Model Cache Behavior:**
+- HuggingFace models are cloned via git-lfs into `model_cache_dir` (default `~/pw/models`)
+- If the model already exists with `config.json`, the clone step is skipped
 
 ### Section 3: Dataset Configuration
 
@@ -323,15 +333,15 @@ model = PeftModel.from_pretrained(
 **Symptoms:** Container build fails
 
 **Solutions:**
-1. Leave `singularity_image` as default to auto-build on the cluster
+1. Set `container.source` to `lfs` (default) or `build` for cluster builds
 2. Ensure `apptainer` or `singularity` is installed on cluster
 3. Check network connectivity for pulling base images (nvcr.io)
 4. If building manually on the cluster:
    ```bash
    cd ~/pw/activate-medical-finetune
-   singularity build ~/pw/singularity/medical-finetune.sif singularity/finetune.def
+   singularity build ~/pw/singularity/finetune.sif singularity/finetune.def
    ```
-5. For pre-built containers, set the full path in `singularity_image` parameter
+5. For pre-built containers, set `container.source` to `path` and provide `container.finetune_path`
 
 ## Advanced Usage
 

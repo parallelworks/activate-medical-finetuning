@@ -28,7 +28,7 @@
 #   ./scripts/run_local.sh --dataset-source local --local-dataset ./data.jsonl
 #
 #   # Use existing container
-#   ./scripts/run_local.sh --sif-path ~/pw/singularity/medical-finetune.sif
+#   ./scripts/run_local.sh --sif-path ~/pw/singularity/finetune.sif
 # ==============================================================================
 
 # Colors for output
@@ -49,7 +49,7 @@ DATASET_NAME="Shekswess/medical_llama3_instruct_dataset_short"
 LOCAL_DATASET_PATH=""
 DATASET_FORMAT="json"
 OUTPUT_DIR="${WORKFLOW_ROOT}/output"
-SIF_PATH="${HOME}/pw/singularity/medical-finetune.sif"
+SIF_PATH="${HOME}/pw/singularity/finetune.sif"
 DEF_FILE="${WORKFLOW_ROOT}/singularity/finetune.def"
 BUILD_CONTAINER=false
 MAX_SAMPLES=0
