@@ -39,8 +39,8 @@ on:
         type: boolean
         label: Submit to Job Scheduler
         tooltip: Enable to submit job via SLURM or PBS scheduler (detected automatically from resource). Disable for direct SSH execution.
-        default: false
-        hidden: ${{ inputs.cluster.schedulerType != 'slurm' && inputs.cluster.schedulerType != 'pbs' }}
+        default: true
+        hidden: true
 
       slurm:
         type: group
@@ -52,6 +52,17 @@ on:
             type: boolean
             default: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
             hidden: true
+
+          cluster:
+            type: dropdown
+            label: SLURM Cluster
+            default: default
+            options:
+              - value: default
+                label: Default
+              - value: hpc4
+                label: HPC4 (-M hpc4)
+            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
 
           account:
             label: Account
@@ -67,7 +78,18 @@ on:
             optional: true
             resource: ${{ inputs.cluster }}
             tooltip: Partition for job submission (--partition)
-            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+            hidden: ${{ inputs.slurm.cluster == 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster == 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          partition_hpc4:
+            type: dropdown
+            label: Partition (HPC4)
+            optional: true
+            tooltip: Partition for HPC4 (-M hpc4)
+            default: normal
+            options: [normal, gpu, gpu-h200, gpu-quick, ht, large-mem, quick, test, unlimited]
+            hidden: ${{ inputs.slurm.cluster != 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster != 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
 
           qos:
             label: Quality of Service (QoS)
@@ -89,14 +111,14 @@ on:
           time:
             label: Walltime
             type: string
-            default: 04:00:00
+            default: 01:00:00
             tooltip: Maximum job duration, e.g., 04:00:00 (--time)
             ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
 
           gres:
             label: GPUs (gres)
             type: dropdown
-            default: "gpu:1"
+            default: "gpu:4"
             tooltip: GPU resource specification (--gres). Keep in sync with training GPU count.
             options:
               - value: "gpu:1"
@@ -107,7 +129,18 @@ on:
                 label: "4 GPUs (gpu:4)"
               - value: "gpu:8"
                 label: "8 GPUs (gpu:8)"
-            ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+            hidden: ${{ inputs.slurm.cluster == 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster == 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
+
+          gres_gpu_hpc4:
+            type: number
+            label: Number of GPUs (HPC4)
+            min: 1
+            max: 4
+            default: 4
+            tooltip: GPUs per node for HPC4 (mapped to --gres=gpu:X)
+            hidden: ${{ inputs.slurm.cluster != 'hpc4' }}
+            ignore: ${{ inputs.slurm.cluster != 'hpc4' || inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
 
           scheduler_directives:
             type: editor
@@ -656,8 +689,32 @@ jobs:
         env:
           SINGULARITY_DISABLE_CACHE: "false"
 
+  derive_scheduler:
+    needs: [prepare_job_directory]
+    ssh:
+      remoteHost: ${{ inputs.cluster.ip }}
+    steps:
+      - name: Compute SLURM Overrides
+        id: compute
+        run: |
+          set -x
+          cluster="${{ inputs.slurm.cluster }}"
+          partition="${{ inputs.slurm.partition }}"
+          gres="${{ inputs.slurm.gres }}"
+          directives=""
+
+          if [[ "$cluster" == "hpc4" ]]; then
+            partition="${{ inputs.slurm.partition_hpc4 }}"
+            gres="gpu:${{ inputs.slurm.gres_gpu_hpc4 }}"
+            directives="#SBATCH -M hpc4"
+          fi
+
+          echo "slurm_partition=${partition}" | tee -a "$OUTPUTS"
+          echo "slurm_gres=${gres}" | tee -a "$OUTPUTS"
+          echo "slurm_directives=${directives}" | tee -a "$OUTPUTS"
+
   finetune:
-    needs: [build-container, prepare-dataset, prepare_job_directory]
+    needs: [build-container, prepare-dataset, prepare_job_directory, derive_scheduler]
     working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
@@ -798,12 +855,13 @@ jobs:
           slurm:
             is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
             account: ${{ inputs.slurm.account }}
-            partition: ${{ inputs.slurm.partition }}
+            partition: ${{ needs.derive_scheduler.outputs.slurm_partition }}
             qos: ${{ inputs.slurm.qos }}
             time: ${{ inputs.slurm.time }}
             cpus_per_task: ${{ inputs.slurm.cpus_per_task }}
-            gres: ${{ inputs.slurm.gres }}
+            gres: ${{ needs.derive_scheduler.outputs.slurm_gres }}
             scheduler_directives: |
+              ${{ needs.derive_scheduler.outputs.slurm_directives }}
               ${{ inputs.slurm.scheduler_directives }}
           pbs:
             is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}

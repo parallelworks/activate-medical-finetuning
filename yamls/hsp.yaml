@@ -39,8 +39,8 @@ on:
         type: boolean
         label: Submit to Job Scheduler
         tooltip: Enable to submit job via SLURM or PBS scheduler (detected automatically from resource). Disable for direct SSH execution.
-        default: false
-        hidden: ${{ inputs.cluster.schedulerType != 'slurm' && inputs.cluster.schedulerType != 'pbs' }}
+        default: true
+        hidden: true
 
       slurm:
         type: group
@@ -96,7 +96,7 @@ on:
           gres:
             label: GPUs (gres)
             type: dropdown
-            default: "gpu:1"
+            default: "gpu:4"
             tooltip: GPU resource specification (--gres). Keep in sync with training GPU count.
             options:
               - value: "gpu:1"
@@ -112,6 +112,7 @@ on:
           scheduler_directives:
             type: editor
             label: Additional Directives
+            default: "##SBATCH --constraint=mla # uncomment for Navy and AFRL DSRC systems"
             optional: true
             tooltip: Additional SLURM directives (include #SBATCH prefix)
             ignore: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
