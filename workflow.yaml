@@ -17,12 +17,12 @@
 # ==============================================================================
 
 permissions:
-  - '*'
+  - "*"
 
 sessions:
   session:
     useTLS: false
-    redirect: true
+    redirect: false
     useCustomDomain: false
 
 on:
@@ -559,7 +559,6 @@ on:
             optional: true
             hidden: ${{ inputs.output_publishing.upload_destination != 'huggingface' }}
 
-
 jobs:
   prepare_job_directory:
     steps:
@@ -578,9 +577,9 @@ jobs:
         run: |
           RUNDIR="${{ inputs.infrastructure.rundir }}"
           RUNDIR="${RUNDIR/#\~/$HOME}"  # Expand tilde
-          
+
           mkdir -p $(dirname "${RUNDIR}")
-          
+
           if [ -d "${RUNDIR}/.git" ]; then
             echo "Repository exists, updating..."
             cd "${RUNDIR}"
@@ -593,20 +592,20 @@ jobs:
             rm -rf "${RUNDIR}"
             git clone -b ${{ inputs.infrastructure.repository_branch }} ${{ inputs.infrastructure.repository }} "${RUNDIR}"
           fi
-          
+
           cd "${RUNDIR}"
           git log -1 --oneline
 
           # Clean up any stale marker/output files from previous runs
           rm -f jobid SESSION_PORT job.started job.ended run.out HOSTNAME
-          
+
           # Create output directory
           mkdir -p "${HOME}/pw/outputs/medical-finetune-${PW_JOB_NUMBER}"
-          
+
           # Output RUN_ID for downstream jobs
           echo "RUN_ID=${PW_JOB_NUMBER}" >> $OUTPUTS
           echo "RUNDIR=${RUNDIR}" >> $OUTPUTS
-          
+
           echo "======================================"
           echo "Job Configuration"
           echo "======================================"
@@ -993,7 +992,8 @@ jobs:
           SINGULARITY_DISABLE_CACHE: "false"
 
   finetune:
-    needs: [build-container, prepare-dataset, prepare_job_directory, prepare-model]
+    needs:
+      [build-container, prepare-dataset, prepare_job_directory, prepare-model]
     working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
@@ -1136,7 +1136,7 @@ jobs:
         early-cancel: any-job-failed
         with:
           resource: ${{ inputs.cluster }}
-          shebang: '#!/bin/bash'
+          shebang: "#!/bin/bash"
           rundir: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
           use_existing_script: true
           script_path: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh
@@ -1165,7 +1165,7 @@ jobs:
         early-cancel: any-job-failed
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
-          
+
           echo "======================================"
           echo "Output Validation Debug"
           echo "======================================"
@@ -1181,7 +1181,7 @@ jobs:
           echo "All directories in OUTPUT_DIR:"
           find "${OUTPUT_DIR}" -type d 2>/dev/null | head -20 || echo "No directories found"
           echo "======================================"
-          
+
           if [ ! -d "${OUTPUT_DIR}/adapters" ]; then
             echo "Error: No adapter outputs found at ${OUTPUT_DIR}/adapters"
             echo "Checking if adapters exist elsewhere..."
@@ -1211,8 +1211,8 @@ jobs:
         early-cancel: any-job-failed
         run: |
           echo "Waiting for TensorBoard to be available on port ${{ inputs.tensorboard_config.tensorboard_port }}..."
-          # Wait up to 5 minutes for TensorBoard to start (finetune job starts it)
-          for i in {1..150}; do
+          # Wait up to 10 minutes for TensorBoard to start (finetune job starts it)
+          for i in {1..300}; do
             if nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; then
               echo "TensorBoard is running on port ${{ inputs.tensorboard_config.tensorboard_port }}!"
               exit 0
@@ -1223,7 +1223,7 @@ jobs:
           exit 1
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
-          
+
       - name: Update TensorBoard Session
         uses: parallelworks/update-session
         with:
@@ -1232,7 +1232,7 @@ jobs:
           status: running
           target: ${{ inputs.cluster.id }}
           slug: ""
-          
+
       - name: Keep session alive during training
         run: |
           echo "TensorBoard session is active. Waiting for training to complete..."
@@ -1270,7 +1270,7 @@ jobs:
 
           echo "Upload complete!"
           echo "Download with: pw bucket cp pw://${BUCKET_NAME}/${ARCHIVE_NAME} ."
-          
+
           # Cleanup temp file
           rm -f "/tmp/${ARCHIVE_NAME}"
         ssh:
@@ -1282,14 +1282,14 @@ jobs:
         run: |
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           HUB_MODEL_ID="${{ inputs.output_publishing.hub_model_id }}"
-          
+
           if [ -z "${HUB_MODEL_ID}" ]; then
             echo "Error: Hub Model ID is required for HuggingFace upload"
             exit 1
           fi
 
           echo "Uploading to HuggingFace Hub: ${HUB_MODEL_ID}..."
-          
+
           # Upload merged weights if available, otherwise adapters
           if [ -d "${OUTPUT_DIR}/merged" ]; then
             echo "Uploading merged weights..."
@@ -1332,7 +1332,6 @@ jobs:
           echo "======================================"
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
-
 # Note: Configuration presets are now implemented via dynamic defaults in the form inputs.
 # When user selects a preset from the dropdown, all related fields automatically update.
 # Users can still override any value after selecting a preset.
