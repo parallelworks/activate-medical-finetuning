@@ -605,6 +605,7 @@ jobs:
           # Output RUN_ID for downstream jobs
           echo "RUN_ID=${PW_JOB_NUMBER}" >> $OUTPUTS
           echo "RUNDIR=${RUNDIR}" >> $OUTPUTS
+          echo "tb_slug=./" >> $OUTPUTS
 
           echo "======================================"
           echo "Job Configuration"
@@ -1266,7 +1267,7 @@ jobs:
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
-          slug: /
+          slug: ${{ needs.prepare_job_directory.outputs.tb_slug }}
 
       - name: Keep TensorBoard alive until workflow completes
         run: |
