@@ -22,7 +22,7 @@ permissions:
 sessions:
   session:
     useTLS: false
-    redirect: false
+    redirect: true
     useCustomDomain: false
 
 on:
@@ -1266,7 +1266,7 @@ jobs:
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
-          slug: ""
+          slug: "/#scalars"
 
       - name: Keep TensorBoard alive until workflow completes
         run: |
