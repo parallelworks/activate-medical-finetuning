@@ -146,9 +146,13 @@ export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 export TRANSFORMERS_VERBOSITY=error
 export TOKENIZERS_PARALLELISM=false
 
-# Start TensorBoard if enabled
+# Start TensorBoard if enabled (skip if already running externally)
 if [[ "${TENSORBOARD_ENABLED}" == "true" ]]; then
-    start_tensorboard
+    if nc -z localhost "${TENSORBOARD_PORT}" 2>/dev/null; then
+        echo "TensorBoard already running on port ${TENSORBOARD_PORT} (managed externally)"
+    else
+        start_tensorboard
+    fi
 fi
 
 LOG_FILE="${LOG_DIR}/finetune.log"
