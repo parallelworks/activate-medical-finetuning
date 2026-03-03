@@ -1210,6 +1210,8 @@ jobs:
   tensorboard-session:
     needs: [build-container, prepare-dataset]
     if: ${{ inputs.tensorboard_config.tensorboard_enabled }}
+    ssh:
+      remoteHost: ${{ inputs.cluster.ip }}
     steps:
       - name: Wait for TensorBoard to start
         early-cancel: any-job-failed
@@ -1225,13 +1227,19 @@ jobs:
           done
           echo "Warning: TensorBoard did not start within timeout"
           exit 1
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
+
+      - name: Allocate local port for session tunnel
+        run: |
+          local_port=$(pw agent open-port)
+          echo "Allocated local port: ${local_port}"
+          echo "local_port=${local_port}" | tee -a $OUTPUTS
 
       - name: Update TensorBoard Session
         uses: parallelworks/update-session
         with:
+          remoteHost: ${{ inputs.cluster.ip }}
           remotePort: ${{ inputs.tensorboard_config.tensorboard_port }}
+          local_port: ${{ needs.tensorboard-session.outputs.local_port }}
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
@@ -1240,13 +1248,13 @@ jobs:
       - name: Keep session alive during training
         run: |
           echo "TensorBoard session is active. Waiting for training to complete..."
+          basepath="/me/session/${PW_USER}/${{ sessions.session }}"
+          echo "TensorBoard URL: https://${PW_PLATFORM_HOST}${basepath}/"
           # Keep session job running - it will be terminated when workflow completes
           while nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; do
             sleep 30
           done
           echo "TensorBoard stopped - training likely completed"
-        ssh:
-          remoteHost: ${{ inputs.cluster.ip }}
 
   upload-outputs:
     needs: [finetune, prepare_job_directory]
