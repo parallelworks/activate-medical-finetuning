@@ -1156,8 +1156,8 @@ jobs:
           chmod +x run.sh
 
           echo "$(date) Running fine-tuning script"
-          ./run.sh > "run.${PW_JOB_ID}.out" 2>&1
-          exit_code=$?
+          ./run.sh 2>&1 | tee "run.${PW_JOB_ID}.out"
+          exit_code=${PIPESTATUS[0]}
           echo "$(date) Script completed with exit code: ${exit_code}"
           touch job.ended
           if [[ $exit_code -ne 0 ]]; then
@@ -1208,53 +1208,88 @@ jobs:
           fi
 
   tensorboard-session:
-    needs: [build-container, prepare-dataset]
+    needs: [build-container, prepare_job_directory]
     if: ${{ inputs.tensorboard_config.tensorboard_enabled }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
     steps:
-      - name: Wait for TensorBoard to start
+      - name: Start TensorBoard server
         early-cancel: any-job-failed
         run: |
-          echo "Waiting for TensorBoard to be available on port ${{ inputs.tensorboard_config.tensorboard_port }}..."
-          # Wait up to 10 minutes for TensorBoard to start (finetune job starts it)
-          for i in {1..300}; do
-            if nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; then
-              echo "TensorBoard is running on port ${{ inputs.tensorboard_config.tensorboard_port }}!"
+          TB_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
+          OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
+          TB_LOG_DIR="${OUTPUT_DIR}/tensorboard"
+          SIF_PATH="${{ needs.build-container.outputs.SIF_PATH }}"
+          TB_PATH_PREFIX="/me/session/${PW_USER}/${{ sessions.session }}"
+
+          # Ensure tensorboard log directory exists
+          mkdir -p "${TB_LOG_DIR}"
+
+          # Kill any existing TensorBoard on this port
+          fuser -k "${TB_PORT}/tcp" 2>/dev/null || true
+
+          echo "Starting TensorBoard on port ${TB_PORT}..."
+          echo "  Log dir: ${TB_LOG_DIR}"
+          echo "  Path prefix: ${TB_PATH_PREFIX}"
+          echo "  Container: ${SIF_PATH}"
+
+          # Start TensorBoard in the Singularity container (background)
+          # Runs independently of the finetune container so it survives after training
+          nohup singularity exec --nv \
+            --bind "${OUTPUT_DIR}:/output" \
+            "${SIF_PATH}" \
+            tensorboard \
+              --logdir /output/tensorboard \
+              --port "${TB_PORT}" \
+              --bind_all \
+              --path_prefix "${TB_PATH_PREFIX}" \
+            &> "${OUTPUT_DIR}/logs/tensorboard_server.log" &
+          TB_PID=$!
+          echo "TensorBoard started with PID ${TB_PID}"
+
+          # Wait for TensorBoard to be ready
+          for i in $(seq 1 30); do
+            if nc -z localhost "${TB_PORT}" 2>/dev/null; then
+              echo "TensorBoard is ready on port ${TB_PORT}"
+              echo "TB_PID=${TB_PID}" | tee -a $OUTPUTS
               exit 0
             fi
             sleep 2
           done
-          echo "Warning: TensorBoard did not start within timeout"
+          echo "ERROR: TensorBoard failed to start within 60 seconds"
+          cat "${OUTPUT_DIR}/logs/tensorboard_server.log" 2>/dev/null || true
           exit 1
-
-      - name: Allocate local port for session tunnel
-        run: |
-          local_port=$(pw agent open-port)
-          echo "Allocated local port: ${local_port}"
-          echo "local_port=${local_port}" | tee -a $OUTPUTS
 
       - name: Update TensorBoard Session
         uses: parallelworks/update-session
         with:
           remoteHost: ${{ inputs.cluster.ip }}
           remotePort: ${{ inputs.tensorboard_config.tensorboard_port }}
-          local_port: ${{ needs.tensorboard-session.outputs.local_port }}
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
           slug: ""
 
-      - name: Keep session alive during training
+      - name: Keep TensorBoard alive until workflow completes
         run: |
-          echo "TensorBoard session is active. Waiting for training to complete..."
+          TB_PORT="${{ inputs.tensorboard_config.tensorboard_port }}"
           basepath="/me/session/${PW_USER}/${{ sessions.session }}"
-          echo "TensorBoard URL: https://${PW_PLATFORM_HOST}${basepath}/"
-          # Keep session job running - it will be terminated when workflow completes
-          while nc -z localhost ${{ inputs.tensorboard_config.tensorboard_port }} 2>/dev/null; do
+          echo "======================================"
+          echo "TensorBoard session is active"
+          echo "URL: https://${PW_PLATFORM_HOST}${basepath}/"
+          echo "======================================"
+
+          # Keep alive while TensorBoard is running
+          # TensorBoard runs independently so it survives after training finishes
+          while true; do
+            if ! nc -z localhost "${TB_PORT}" 2>/dev/null; then
+              echo "TensorBoard is no longer running on port ${TB_PORT}"
+              break
+            fi
             sleep 30
           done
-          echo "TensorBoard stopped - training likely completed"
+
+          echo "TensorBoard session ended"
 
   upload-outputs:
     needs: [finetune, prepare_job_directory]
