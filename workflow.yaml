@@ -1250,7 +1250,6 @@ jobs:
             if nc -z localhost "${TB_PORT}" 2>/dev/null; then
               echo "TensorBoard is ready on port ${TB_PORT}"
               echo "TB_PID=${TB_PID}" | tee -a $OUTPUTS
-              echo "slug=/#scalars" | tee -a $OUTPUTS
               exit 0
             fi
             sleep 2
@@ -1267,7 +1266,7 @@ jobs:
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
-          slug: ${{ needs.tensorboard-session.outputs.slug }}
+          slug: /
 
       - name: Keep TensorBoard alive until workflow completes
         run: |
