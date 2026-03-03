@@ -1132,34 +1132,38 @@ jobs:
           chmod +x "${SCRIPT_PATH}"
 
       - name: Run fine-tuning
-        uses: marketplace/job_runner/v4.0
         early-cancel: any-job-failed
-        with:
-          resource: ${{ inputs.cluster }}
-          shebang: "#!/bin/bash"
-          rundir: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
-          use_existing_script: true
-          script_path: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh
-          scheduler: ${{ inputs.submit_to_scheduler }}
-          inject_markers: true
-          slurm:
-            is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'slurm' }}
-            account: ${{ inputs.slurm.account }}
-            partition: ${{ inputs.slurm.partition }}
-            qos: ${{ inputs.slurm.qos }}
-            time: ${{ inputs.slurm.time }}
-            cpus_per_task: ${{ inputs.slurm.cpus_per_task }}
-            gres: ${{ inputs.slurm.gres }}
-            scheduler_directives: |
-              ${{ inputs.slurm.scheduler_directives }}
-          pbs:
-            is_disabled: ${{ inputs.submit_to_scheduler != true || inputs.cluster.schedulerType != 'pbs' }}
-            account: ${{ inputs.pbs.account }}
-            queue: ${{ inputs.pbs.queue }}
-            walltime: ${{ inputs.pbs.walltime }}
-            select: ${{ inputs.pbs.select }}
-            scheduler_directives: |
-              ${{ inputs.pbs.scheduler_directives }}
+        run: |
+          set -e
+          RUNDIR="${{ needs.prepare_job_directory.outputs.RUNDIR }}"
+          SCRIPT_PATH="${RUNDIR}/start_finetune.sh"
+          cd "${RUNDIR}"
+
+          # Clean up stale marker files
+          rm -f CANCEL_STREAMING job.ended job.started HOSTNAME COMPLETED
+
+          # Create wrapper script with markers
+          cat > run.sh << 'SHEBANG_EOF'
+          #!/bin/bash
+          SHEBANG_EOF
+          echo "cd ${RUNDIR}" >> run.sh
+          cat >> run.sh << 'MARKER_EOF'
+          touch job.started
+          hostname > HOSTNAME
+          echo "$(date) Job started on $(hostname)"
+          MARKER_EOF
+          cat "${SCRIPT_PATH}" >> run.sh
+          chmod +x run.sh
+
+          echo "$(date) Running fine-tuning script"
+          ./run.sh > "run.${PW_JOB_ID}.out" 2>&1
+          exit_code=$?
+          echo "$(date) Script completed with exit code: ${exit_code}"
+          touch job.ended
+          if [[ $exit_code -ne 0 ]]; then
+            echo "$(date) ERROR: Fine-tuning failed with exit code ${exit_code}"
+            exit ${exit_code}
+          fi
 
       - name: Validate outputs
         early-cancel: any-job-failed
