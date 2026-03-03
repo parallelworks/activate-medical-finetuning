@@ -398,8 +398,18 @@ EOF
     singularity_opts+=("--bind" "${DATASET_CACHE_DIR}:/workspace/datasets")
     singularity_opts+=("--env" "HF_DATASETS_CACHE=/workspace/datasets")
 
+    # Bind-mount local model directory into the container if MODEL_ID is a local path
+    local container_model_id="${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}"
+    if [[ -d "${container_model_id}" ]]; then
+        local model_basename
+        model_basename="$(basename "${container_model_id}")"
+        singularity_opts+=("--bind" "${container_model_id}:/models/${model_basename}")
+        container_model_id="/models/${model_basename}"
+        log_info "Bind-mounting local model: ${MODEL_ID} -> ${container_model_id}"
+    fi
+
     # Pass training configuration as environment variables for run_finetune.sh
-    singularity_opts+=("--env" "BASE_MODEL_ID=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}")
+    singularity_opts+=("--env" "BASE_MODEL_ID=${container_model_id}")
     singularity_opts+=("--env" "DATASET_SOURCE=${DATASET_SOURCE}")
     singularity_opts+=("--env" "OUTPUT_DIR=/output")
     singularity_opts+=("--env" "DATASET_SPLIT=${DATASET_SPLIT:-train}")
