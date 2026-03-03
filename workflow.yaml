@@ -1267,7 +1267,7 @@ jobs:
           name: ${{ sessions.session }}
           status: running
           target: ${{ inputs.cluster.id }}
-          slug: ${{ needs.prepare_job_directory.outputs.tb_slug }}
+          slug: data
 
       - name: Keep TensorBoard alive until workflow completes
         run: |
