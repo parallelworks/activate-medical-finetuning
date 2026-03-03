@@ -354,11 +354,13 @@ def build_base_model(
     elif args.quantization == "8bit":
         quant_config = BitsAndBytesConfig(load_in_8bit=True)
 
+    is_local = os.path.isdir(args.base_model_id)
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model_id,
         trust_remote_code=args.trust_remote_code,
         quantization_config=quant_config,
-        use_auth_token=args.hf_token,
+        use_auth_token=None if is_local else args.hf_token,
+        local_files_only=is_local,
         device_map="auto",
     )
     model = prepare_model_for_kbit_training(
@@ -385,7 +387,8 @@ def build_base_model(
         args.base_model_id,
         trust_remote_code=args.trust_remote_code,
         use_fast=True,
-        use_auth_token=args.hf_token,
+        use_auth_token=None if is_local else args.hf_token,
+        local_files_only=is_local,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
