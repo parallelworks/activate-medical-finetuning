@@ -1233,11 +1233,35 @@ jobs:
           fuser -k "${TB_PORT}/tcp" 2>/dev/null || true
           fuser -k "${TB_BACKEND_PORT}/tcp" 2>/dev/null || true
 
+          # Start the base-path proxy FIRST to claim the public port before
+          # the parallel finetune job can start its own TensorBoard on it.
+          # The proxy returns 502 until the backend is ready - that's fine.
+          echo "Starting TensorBoard proxy on port ${TB_PORT}..."
+          echo "  Session base path: ${SESSION_BASE_PATH}"
+          export SESSION_BASE_PATH TB_BACKEND_PORT
+          nohup python3 "${RUNDIR}/scripts/tb_proxy.py" --port "${TB_PORT}" \
+            &> "${OUTPUT_DIR}/logs/tb_proxy.log" &
+          PROXY_PID=$!
+
+          # Wait for proxy to claim the port
+          for i in $(seq 1 10); do
+            if nc -z localhost "${TB_PORT}" 2>/dev/null; then
+              echo "TensorBoard proxy is listening on port ${TB_PORT}"
+              break
+            fi
+            sleep 1
+          done
+          if ! nc -z localhost "${TB_PORT}" 2>/dev/null; then
+            echo "ERROR: TensorBoard proxy failed to start"
+            cat "${OUTPUT_DIR}/logs/tb_proxy.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Now start TensorBoard backend
           echo "Starting TensorBoard on backend port ${TB_BACKEND_PORT}..."
           echo "  Log dir: ${TB_LOG_DIR}"
           echo "  Container: ${SIF_PATH}"
 
-          # Start TensorBoard on a backend port (not directly exposed)
           nohup singularity exec --nv \
             --bind "${OUTPUT_DIR}:/output" \
             "${SIF_PATH}" \
@@ -1253,38 +1277,14 @@ jobs:
           for i in $(seq 1 30); do
             if nc -z localhost "${TB_BACKEND_PORT}" 2>/dev/null; then
               echo "TensorBoard backend is ready on port ${TB_BACKEND_PORT}"
-              break
-            fi
-            sleep 2
-          done
-          if ! nc -z localhost "${TB_BACKEND_PORT}" 2>/dev/null; then
-            echo "ERROR: TensorBoard failed to start within 60 seconds"
-            cat "${OUTPUT_DIR}/logs/tensorboard_server.log" 2>/dev/null || true
-            exit 1
-          fi
-
-          # Start the base-path proxy on the public port
-          # This injects <base href="..."> into HTML responses so asset paths
-          # resolve correctly even without a trailing slash in the browser URL
-          echo "Starting TensorBoard proxy on port ${TB_PORT}..."
-          echo "  Session base path: ${SESSION_BASE_PATH}"
-          export SESSION_BASE_PATH TB_BACKEND_PORT
-          nohup python3 "${RUNDIR}/scripts/tb_proxy.py" --port "${TB_PORT}" \
-            &> "${OUTPUT_DIR}/logs/tb_proxy.log" &
-          PROXY_PID=$!
-
-          # Wait for proxy to be ready
-          for i in $(seq 1 15); do
-            if nc -z localhost "${TB_PORT}" 2>/dev/null; then
-              echo "TensorBoard proxy is ready on port ${TB_PORT}"
               echo "TB_PID=${TB_PID}" | tee -a $OUTPUTS
               echo "PROXY_PID=${PROXY_PID}" | tee -a $OUTPUTS
               exit 0
             fi
-            sleep 1
+            sleep 2
           done
-          echo "ERROR: TensorBoard proxy failed to start"
-          cat "${OUTPUT_DIR}/logs/tb_proxy.log" 2>/dev/null || true
+          echo "ERROR: TensorBoard failed to start within 60 seconds"
+          cat "${OUTPUT_DIR}/logs/tensorboard_server.log" 2>/dev/null || true
           exit 1
 
       - name: Update TensorBoard Session
