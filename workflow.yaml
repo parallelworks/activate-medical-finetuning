@@ -648,6 +648,27 @@ jobs:
           else
             echo "Cloning model ${MODEL_ID} to ${TARGET_DIR}"
 
+            # Validate HF token for gated models
+            if [[ -z "${HF_TOKEN}" ]]; then
+              echo ""
+              echo "========================================"
+              echo "ERROR: HuggingFace token is not set."
+              echo "========================================"
+              echo ""
+              echo "Model '${MODEL_ID}' requires authentication."
+              echo "Most LLMs on HuggingFace (Llama, Mistral, Gemma, etc.) are gated"
+              echo "and require a token with accepted license agreement."
+              echo ""
+              echo "To fix this, do ONE of the following:"
+              echo "  1. Set an org-level secret: go to PW Settings > Secrets > add 'HF_TOKEN'"
+              echo "  2. Paste your token in the workflow form under 'HuggingFace Token'"
+              echo ""
+              echo "Get a token at: https://huggingface.co/settings/tokens"
+              echo "Then accept the model license at: https://huggingface.co/${MODEL_ID}"
+              echo ""
+              exit 1
+            fi
+
             # Ensure git-lfs is available
             if ! git lfs version >/dev/null 2>&1; then
               echo "Installing git-lfs locally..."
