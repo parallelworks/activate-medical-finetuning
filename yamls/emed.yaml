@@ -95,7 +95,6 @@ permissions:
             type: dropdown
             label: Select Cluster
             optional: true
-            default: hpc4
             options:
               - value: ''
                 label: Default
@@ -516,6 +515,7 @@ jobs:
           cat > "${SCRIPT_PATH}" << 'SCRIPTEOF'
           #!/bin/bash
           set -euo pipefail
+          module load cuda/12.1
 
           RUNDIR="${{ inputs.advanced_settings.rundir }}"
           RUNDIR="${RUNDIR/#\~/$HOME}"
@@ -624,33 +624,3 @@ jobs:
           pbs:
             is_enabled: ${{ inputs.pbs.is_enabled }}
             scheduler_directives: ${{ inputs.pbs.scheduler_directives }}
-
-  cleanup:
-    needs:
-      - finetune
-    if: ${{ always }}
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Display training summary
-        run: |
-          OUTPUT_DIR="${{ inputs.output_dir }}"
-          OUTPUT_DIR=$(eval echo "${OUTPUT_DIR}")
-          echo "======================================"
-          echo "Medical LLM Fine-tuning Summary"
-          echo "======================================"
-          echo "Base Model:           ${{ inputs.model_selection.base_model_id }}"
-          echo "Dataset:              ${{ inputs.dataset_config.dataset_name }}"
-          echo "Fine-tuned Model Dir: ${OUTPUT_DIR}"
-          echo ""
-          echo "Next step — serve with activate-rag-vllm:"
-          echo "  1. Select the same GPU cluster"
-          echo "  2. Set Model Source  → 'Local Path (pre-staged weights)'"
-          echo "  3. Set Model Path    → ${OUTPUT_DIR}"
-          echo "======================================"
-          if [[ -d "${OUTPUT_DIR}" ]]; then
-            echo "Output directory contents:"
-            ls -la "${OUTPUT_DIR}"
-          else
-            echo "WARNING: Output directory not found at ${OUTPUT_DIR}"
-          fi

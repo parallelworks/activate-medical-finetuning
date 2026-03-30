@@ -366,12 +366,7 @@ EOF
 
     local singularity_opts=()
     singularity_opts+=("--nv")
-    
-    # Use fakeroot if available (not all systems support it)
-    if ${SINGULARITY_CMD} exec --help 2>&1 | grep -q fakeroot; then
-        singularity_opts+=("--fakeroot")
-    fi
-    
+    singularity_opts+=("--writable-tmpfs")
     singularity_opts+=("--bind" "${WORKFLOW_ROOT}:/workspace")
     singularity_opts+=("--bind" "${OUTPUT_DIR}:/output")
     singularity_opts+=("--env" "HF_HOME=/workspace/.cache/huggingface")
@@ -450,6 +445,15 @@ EOF
 
     if [[ ${exit_code} -eq 0 ]]; then
         log_success "Training completed successfully!"
+        # Promote merged weights to OUTPUT_DIR root so it looks like a standard
+        # HuggingFace model directory (config.json + safetensors at top level),
+        # which is what vLLM and activate-rag-vllm expect.
+        if [[ -d "${OUTPUT_DIR}/merged" ]]; then
+            log_info "Promoting merged weights to ${OUTPUT_DIR}..."
+            mv "${OUTPUT_DIR}/merged/"* "${OUTPUT_DIR}/"
+            rmdir "${OUTPUT_DIR}/merged"
+            log_success "Model directory ready for vLLM: ${OUTPUT_DIR}"
+        fi
     else
         log_error "Training failed with exit code ${exit_code}"
         log_info "Check logs: ${OUTPUT_DIR}/logs/finetune.log"
@@ -466,14 +470,18 @@ show_results() {
         ls -la "${OUTPUT_DIR}/adapters"
     fi
 
-    if [[ -d "${OUTPUT_DIR}/merged" ]]; then
-        log_success "Merged weights (vLLM ready):"
-        ls -la "${OUTPUT_DIR}/merged"
+    if [[ -f "${OUTPUT_DIR}/config.json" ]]; then
+        log_success "Merged weights (vLLM ready) at ${OUTPUT_DIR}:"
+        ls -la "${OUTPUT_DIR}"/*.safetensors "${OUTPUT_DIR}"/*.json 2>/dev/null || true
     fi
 
     echo ""
     log_info "Output directory: ${OUTPUT_DIR}"
     log_info "Logs: ${OUTPUT_DIR}/logs/finetune.log"
+    echo ""
+    log_info "To serve with activate-rag-vllm:"
+    log_info "  Model Source → Local Path (pre-staged weights)"
+    log_info "  Model Path   → ${OUTPUT_DIR}"
 }
 
 # ==============================================================================
