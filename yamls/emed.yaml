@@ -88,8 +88,8 @@ permissions:
       slurm:
         type: group
         label: SLURM Directives
-        hidden: ${{ inputs.resource.provider == 'existing' && inputs.resource.schedulerType != 'slurm' || inputs.submit_to_scheduler == false }}
-        ignore: ${{ inputs.resource.provider == 'existing' && inputs.resource.schedulerType != 'slurm' || inputs.submit_to_scheduler == false }}
+        hidden: ${{ inputs.resource.schedulerType != 'slurm' || inputs.submit_to_scheduler == false }}
+        ignore: ${{ inputs.resource.schedulerType != 'slurm' || inputs.submit_to_scheduler == false }}
         items:
           slurm_options:
             type: dropdown
@@ -486,7 +486,15 @@ jobs:
         run: |
           set -x
           SIF_PATH="${{ inputs.container.finetune_path }}"
-          if [[ ! -e "${SIF_PATH}" ]]; then
+          if [[ -d "${SIF_PATH}" ]]; then
+            # Sandbox directory — verify it has the Singularity metadata file
+            if [[ ! -f "${SIF_PATH}/singularity" ]]; then
+              echo "WARNING: ${SIF_PATH} exists but does not contain the 'singularity' metadata file; it may not be a valid sandbox"
+            fi
+            echo "Container type: sandbox directory"
+          elif [[ -f "${SIF_PATH}" ]]; then
+            echo "Container type: SIF image"
+          else
             echo "ERROR: Singularity container not found at ${SIF_PATH}"
             exit 1
           fi
@@ -512,9 +520,13 @@ jobs:
           RUNDIR="${{ inputs.advanced_settings.rundir }}"
           RUNDIR="${RUNDIR/#\~/$HOME}"
 
-          # Container (use existing path on shared filesystem)
+          # Container (use existing path on shared filesystem — .sif file or sandbox directory)
           export SIF_PATH="${{ inputs.container.finetune_path }}"
-          if [[ ! -e "${SIF_PATH}" ]]; then
+          if [[ -d "${SIF_PATH}" ]]; then
+            echo "Container type: sandbox directory"
+          elif [[ -f "${SIF_PATH}" ]]; then
+            echo "Container type: SIF image"
+          else
             echo "ERROR: Singularity container not found at ${SIF_PATH}"
             exit 1
           fi

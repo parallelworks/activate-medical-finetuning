@@ -261,7 +261,7 @@ ensure_container() {
         fi
     fi
 
-    if [[ -f "${SIF_PATH}" ]]; then
+    if [[ -e "${SIF_PATH}" ]]; then
         log_success "Using container: ${SIF_PATH}"
         return 0
     fi
