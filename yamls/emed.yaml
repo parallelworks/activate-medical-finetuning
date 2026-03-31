@@ -77,13 +77,15 @@ permissions:
       output_dir:
         label: Fine-tuned Model Output Directory
         type: string
-        default: /public/codelab/models/fine-tuned-${PW_JOB_ID}
+        default: ./fine-tuned-${PW_JOB_ID}
         prefillDefault: true
-        tooltip: >
+        tooltip: |
           Directory where the merged fine-tuned model weights will be saved.
           ${PW_JOB_ID} is replaced at runtime with the workflow job ID.
           Use this path as the model directory in the activate-rag-vllm workflow
           (set Model Source to "Local Path").
+          If using a relative path, provide the full absolute path when setting
+          Model Path in activate-rag-vllm.
 
       slurm:
         type: group
