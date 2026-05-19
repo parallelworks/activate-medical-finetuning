@@ -536,7 +536,15 @@ jobs:
                 curl -L "$LFS_URL" -o git-lfs-linux-amd64.tar.gz
               fi
               tar -xzf git-lfs-linux-amd64.tar.gz
-              ./git-lfs-*/install.sh --local
+              if ./git-lfs-*/install.sh --local 2>/dev/null; then
+                echo "git-lfs installed locally"
+              elif sudo -n ./git-lfs-*/install.sh 2>/dev/null; then
+                echo "git-lfs installed via sudo"
+              else
+                echo "ERROR: git-lfs local install failed and sudo is not available"
+                rm -rf git-lfs-*
+                exit 1
+              fi
               rm -rf git-lfs-*
               export PATH="${HOME}/bin:${PATH}"
               cd "${{ needs.prepare_job_directory.outputs.RUNDIR }}"
@@ -799,7 +807,7 @@ jobs:
             start_service_script: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/start_finetune.sh
             controller_script: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/controller.sh
             inputs_sh: ${{ needs.prepare_job_directory.outputs.RUNDIR }}/inputs.sh
-            slug: ''
+            slug: '/'
             rundir: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
 
   print_summary:
