@@ -618,7 +618,7 @@ jobs:
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
-  prepare-model:
+  prepare_model:
     needs: [prepare_job_directory]
     if: ${{ inputs.model_selection.model_source == 'huggingface' }}
     steps:
@@ -772,7 +772,7 @@ jobs:
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
-  build-container:
+  build_container:
     needs: [prepare-dataset]
     steps:
       - name: Prepare Singularity container
@@ -994,7 +994,7 @@ jobs:
           SINGULARITY_DISABLE_CACHE: "false"
 
   finetune:
-    needs: [build-container, prepare-dataset, prepare_job_directory, prepare-model]
+    needs: [build_container, prepare-dataset, prepare_job_directory, prepare_model]
     working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
@@ -1008,8 +1008,8 @@ jobs:
           OUTPUT_DIR="${HOME}/pw/outputs/medical-finetune-${{ needs.prepare_job_directory.outputs.RUN_ID }}"
           WORKDIR="${{ needs.prepare_job_directory.outputs.RUNDIR }}"
 
-          # Get SIF path from build-container job output
-          export SIF_PATH="${{ needs.build-container.outputs.SIF_PATH }}"
+          # Get SIF path from build_container job output
+          export SIF_PATH="${{ needs.build_container.outputs.SIF_PATH }}"
 
           # Fallback if output not available
           if [ -z "${SIF_PATH}" ] || [ ! -f "${SIF_PATH}" ]; then
@@ -1038,7 +1038,7 @@ jobs:
             export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
             echo "Using local model weights: ${MODEL_ID}"
           else
-            CLONED_MODEL="${{ needs.prepare-model.outputs.MODEL_PATH }}"
+            CLONED_MODEL="${{ needs.prepare_model.outputs.MODEL_PATH }}"
             if [ -n "${CLONED_MODEL}" ] && [ -d "${CLONED_MODEL}" ]; then
               export MODEL_ID="${CLONED_MODEL}"
               echo "Using cached HuggingFace model: ${MODEL_ID}"
@@ -1205,7 +1205,7 @@ jobs:
           fi
 
   tensorboard-session:
-    needs: [build-container, prepare-dataset]
+    needs: [build_container, prepare-dataset]
     if: ${{ inputs.tensorboard_config.tensorboard_enabled }}
     steps:
       - name: Wait for TensorBoard to start
