@@ -477,7 +477,7 @@ jobs:
         ssh:
           remoteHost: ${{ inputs.cluster.ip }}
 
-  prepare-model:
+  prepare_model:
     needs: [prepare_job_directory]
     if: ${{ inputs.model_selection.model_source == 'huggingface' }}
     steps:
@@ -679,7 +679,7 @@ jobs:
           remoteHost: ${{ inputs.cluster.ip }}
 
   finetune:
-    needs: [prepare_containers, prepare-dataset, prepare_job_directory, prepare-model]
+    needs: [prepare_containers, prepare-dataset, prepare_job_directory, prepare_model]
     working-directory: ${{ needs.prepare_job_directory.outputs.RUNDIR }}
     ssh:
       remoteHost: ${{ inputs.cluster.ip }}
@@ -709,7 +709,7 @@ jobs:
             export MODEL_ID="${{ inputs.model_selection.local_model_path }}"
             echo "Using local model weights: ${MODEL_ID}"
           else
-            CLONED_MODEL="${{ needs.prepare-model.outputs.MODEL_PATH }}"
+            CLONED_MODEL="${{ needs.prepare_model.outputs.MODEL_PATH }}"
             if [ -n "${CLONED_MODEL}" ] && [ -d "${CLONED_MODEL}" ]; then
               export MODEL_ID="${CLONED_MODEL}"
               echo "Using cached HuggingFace model: ${MODEL_ID}"
